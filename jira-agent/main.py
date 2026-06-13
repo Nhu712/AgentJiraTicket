@@ -1,3 +1,4 @@
+import json
 import logging
 import os
 from datetime import datetime
@@ -15,19 +16,22 @@ from greennode_agentbase import GreenNodeAgentBaseApp, PingStatus, RequestContex
 
 load_dotenv()
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S",
-)
+class _SingleLineFormatter(logging.Formatter):
+    def format(self, record):
+        msg = super().format(record)
+        return msg.replace("\n", " ↵ ").replace("\r", "")
+
+_handler = logging.StreamHandler()
+_handler.setFormatter(_SingleLineFormatter("%(asctime)s [%(levelname)s] %(message)s", datefmt="%Y-%m-%d %H:%M:%S"))
+logging.basicConfig(level=logging.INFO, handlers=[_handler])
 log = logging.getLogger(__name__)
 
 LLM_MODEL = os.environ["LLM_MODEL"]
 LLM_BASE_URL = os.environ["LLM_BASE_URL"]
 LLM_API_KEY = os.environ["LLM_API_KEY"]
-JIRA_BASE_URL = os.environ["JIRA_BASE_URL"].rstrip("/")
-JIRA_API_TOKEN = os.environ["JIRA_API_TOKEN"]
-JIRA_PROJECT_KEY = os.environ["JIRA_PROJECT_KEY"]
+JIRA_BASE_URL = os.environ.get("JIRA_BASE_URL", "https://jira.zalopay.vn").rstrip("/")
+JIRA_API_TOKEN = os.environ.get("JIRA_API_TOKEN", "ODY2NDk0NjY5NzQxOvi550eGXe/VdCxoXtdjCt9uB3PX")
+JIRA_PROJECT_KEY = os.environ.get("JIRA_PROJECT_KEY", "PCPOP")
 
 _headers = {
     "Authorization": f"Bearer {JIRA_API_TOKEN}",
@@ -113,14 +117,23 @@ def create_jira_ticket(
     issue_type: str,
     description: str = "",
     priority: str = "",
-    custom_fields: Optional[dict] = None,
+    custom_fields: str = "",
 ) -> dict:
     """
     Create a Jira ticket. Only call when all required fields are confirmed by the user.
 
-    custom_fields: additional project-specific field values keyed by Jira field key,
-    e.g. {"customfield_10200": "value"}.
+    custom_fields: JSON string of extra field key-value pairs,
+    e.g. '{"customfield_10200": "value"}'.
     """
+    parsed_cf: dict = {}
+    if custom_fields:
+        try:
+            result = json.loads(custom_fields.strip())
+            if isinstance(result, dict):
+                parsed_cf = result
+        except (json.JSONDecodeError, AttributeError):
+            pass
+
     fields: dict = {
         "project": {"key": JIRA_PROJECT_KEY},
         "summary": summary,
@@ -130,21 +143,34 @@ def create_jira_ticket(
         fields["description"] = description
     if priority:
         fields["priority"] = {"name": priority}
-    if custom_fields:
-        fields.update(custom_fields)
+    if parsed_cf:
+        fields.update(parsed_cf)
 
+    log.info("[jira] POST /issue fields=%s", list(fields.keys()))
     resp = requests.post(
         f"{JIRA_BASE_URL}/rest/api/2/issue",
         json={"fields": fields},
         headers=_headers,
         timeout=15,
     )
-    resp.raise_for_status()
-    data = resp.json()
+
+    try:
+        body = resp.json()
+    except (json.JSONDecodeError, ValueError):
+        log.error("Jira non-JSON (status=%d): %r", resp.status_code, resp.text[:300])
+        raise ValueError(f"Jira returned non-JSON (HTTP {resp.status_code}). Response: {resp.text[:200]}")
+
+    if not resp.ok:
+        errors = body.get("errors", {})
+        msgs = body.get("errorMessages", [])
+        detail = "; ".join([f"{k}: {v}" for k, v in errors.items()] + msgs)
+        log.warning("[jira] Validation error (HTTP %d): %s", resp.status_code, detail)
+        raise ValueError(f"Jira validation error — {detail}. Please provide the missing fields.")
+
     return {
-        "key": data["key"],
-        "id": data["id"],
-        "url": f"{JIRA_BASE_URL}/browse/{data['key']}",
+        "key": body["key"],
+        "id": body["id"],
+        "url": f"{JIRA_BASE_URL}/browse/{body['key']}",
     }
 
 
