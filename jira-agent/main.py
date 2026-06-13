@@ -1,0 +1,233 @@
+import base64
+import os
+from datetime import datetime
+from typing import Annotated, Optional, TypedDict
+
+import requests
+from dotenv import load_dotenv
+from langchain_core.tools import tool
+from langchain_openai import ChatOpenAI
+from langgraph.graph import END, START, StateGraph
+from langgraph.graph.message import add_messages
+from langgraph.prebuilt import ToolNode, tools_condition
+
+from greennode_agentbase import GreenNodeAgentBaseApp, PingStatus, RequestContext
+
+load_dotenv()
+
+LLM_MODEL = os.environ["LLM_MODEL"]
+LLM_BASE_URL = os.environ["LLM_BASE_URL"]
+LLM_API_KEY = os.environ["LLM_API_KEY"]
+JIRA_BASE_URL = os.environ["JIRA_BASE_URL"].rstrip("/")
+JIRA_EMAIL = os.environ["JIRA_EMAIL"].strip()
+JIRA_API_TOKEN = os.environ["JIRA_API_TOKEN"]
+JIRA_PROJECT_KEY = os.environ["JIRA_PROJECT_KEY"]
+
+_auth = base64.b64encode(f"{JIRA_EMAIL}:{JIRA_API_TOKEN}".encode()).decode()
+_headers = {
+    "Authorization": f"Basic {_auth}",
+    "Content-Type": "application/json",
+    "Accept": "application/json",
+}
+
+
+def _fetch_project_schema() -> str:
+    """Call createmeta to discover required/optional fields per issue type."""
+    try:
+        resp = requests.get(
+            f"{JIRA_BASE_URL}/rest/api/2/issue/createmeta",
+            params={
+                "projectKeys": JIRA_PROJECT_KEY,
+                "expand": "projects.issuetypes.fields",
+            },
+            headers=_headers,
+            timeout=15,
+        )
+        resp.raise_for_status()
+        projects = resp.json().get("projects", [])
+    except Exception as exc:
+        return f"(Schema fetch failed: {exc})"
+
+    if not projects:
+        return f"(No project found for key {JIRA_PROJECT_KEY!r})"
+
+    lines = []
+    for itype in projects[0].get("issuetypes", []):
+        required, optional = [], []
+        for key, field in itype.get("fields", {}).items():
+            if key in ("issuetype", "project"):
+                continue
+            name = field.get("name", key)
+            allowed = field.get("allowedValues", [])
+            suffix = ""
+            if allowed:
+                vals = [v.get("name", v.get("value", "")) for v in allowed[:8]]
+                suffix = f" [options: {', '.join(vals)}]"
+            entry = f"    - {name} (key={key}){suffix}"
+            (required if field.get("required") else optional).append(entry)
+
+        lines.append(f"Issue type: {itype['name']}")
+        if required:
+            lines.append("  Required:")
+            lines.extend(required)
+        if optional:
+            lines.append("  Optional (common):")
+            lines.extend(optional[:5])
+        lines.append("")
+
+    return "\n".join(lines)
+
+
+# Fetched once at startup; project schema rarely changes between requests.
+_PROJECT_SCHEMA = _fetch_project_schema()
+
+SYSTEM_PROMPT = f"""You are a Jira project management assistant for project {JIRA_PROJECT_KEY}.
+Instance: {JIRA_BASE_URL}
+
+=== Project field schema ===
+{_PROJECT_SCHEMA}
+===========================
+
+Workflow for creating a ticket:
+1. Parse the user message and extract values for every REQUIRED field in the schema above.
+2. If any required field cannot be determined, ask the user for it. Do not guess.
+3. Only call create_jira_ticket once ALL required fields are confirmed.
+4. After creation, reply with the ticket key and direct URL.
+
+You can also use get_jira_ticket to look up a ticket, or search_jira_tickets with JQL.
+Be concise and professional.
+"""
+
+
+@tool
+def create_jira_ticket(
+    summary: str,
+    issue_type: str,
+    description: str = "",
+    priority: str = "",
+    custom_fields: Optional[dict] = None,
+) -> dict:
+    """
+    Create a Jira ticket. Only call when all required fields are confirmed by the user.
+
+    custom_fields: additional project-specific field values keyed by Jira field key,
+    e.g. {"customfield_10200": "value"}.
+    """
+    fields: dict = {
+        "project": {"key": JIRA_PROJECT_KEY},
+        "summary": summary,
+        "issuetype": {"name": issue_type},
+    }
+    if description:
+        fields["description"] = description
+    if priority:
+        fields["priority"] = {"name": priority}
+    if custom_fields:
+        fields.update(custom_fields)
+
+    resp = requests.post(
+        f"{JIRA_BASE_URL}/rest/api/2/issue",
+        json={"fields": fields},
+        headers=_headers,
+        timeout=15,
+    )
+    resp.raise_for_status()
+    data = resp.json()
+    return {
+        "key": data["key"],
+        "id": data["id"],
+        "url": f"{JIRA_BASE_URL}/browse/{data['key']}",
+    }
+
+
+@tool
+def get_jira_ticket(ticket_key: str) -> dict:
+    """Get details of a Jira issue by its key, e.g. PROJ-123."""
+    resp = requests.get(
+        f"{JIRA_BASE_URL}/rest/api/2/issue/{ticket_key}",
+        headers=_headers,
+        timeout=15,
+    )
+    resp.raise_for_status()
+    f = resp.json()["fields"]
+    return {
+        "key": ticket_key,
+        "summary": f.get("summary"),
+        "status": f["status"]["name"],
+        "priority": f["priority"]["name"] if f.get("priority") else None,
+        "issue_type": f["issuetype"]["name"],
+        "assignee": f["assignee"]["displayName"] if f.get("assignee") else None,
+        "url": f"{JIRA_BASE_URL}/browse/{ticket_key}",
+    }
+
+
+@tool
+def search_jira_tickets(jql: str, max_results: int = 10) -> list:
+    """Search Jira issues with JQL. Example: 'project=PROJ AND status=Open ORDER BY created DESC'."""
+    resp = requests.get(
+        f"{JIRA_BASE_URL}/rest/api/2/issue/search",
+        params={
+            "jql": jql,
+            "maxResults": max_results,
+            "fields": "summary,status,priority,issuetype",
+        },
+        headers=_headers,
+        timeout=15,
+    )
+    resp.raise_for_status()
+    return [
+        {
+            "key": i["key"],
+            "summary": i["fields"]["summary"],
+            "status": i["fields"]["status"]["name"],
+            "url": f"{JIRA_BASE_URL}/browse/{i['key']}",
+        }
+        for i in resp.json().get("issues", [])
+    ]
+
+
+_tools = [create_jira_ticket, get_jira_ticket, search_jira_tickets]
+
+llm = ChatOpenAI(model=LLM_MODEL, base_url=LLM_BASE_URL, api_key=LLM_API_KEY)
+llm_with_tools = llm.bind_tools(_tools)
+
+
+class State(TypedDict):
+    messages: Annotated[list, add_messages]
+
+
+def _chatbot(state: State) -> dict:
+    messages = [{"role": "system", "content": SYSTEM_PROMPT}] + state["messages"]
+    return {"messages": [llm_with_tools.invoke(messages)]}
+
+
+_g = StateGraph(State)
+_g.add_node("chatbot", _chatbot)
+_g.add_node("tools", ToolNode(_tools))
+_g.add_edge(START, "chatbot")
+_g.add_conditional_edges("chatbot", tools_condition)
+_g.add_edge("tools", "chatbot")
+_g.add_edge("chatbot", END)
+graph = _g.compile()
+
+app = GreenNodeAgentBaseApp()
+
+
+@app.entrypoint
+def handler(payload: dict, context: RequestContext) -> dict:
+    message = payload.get("message", "")
+    result = graph.invoke({"messages": [("user", message)]})
+    return {
+        "status": "success",
+        "response": result["messages"][-1].content,
+        "timestamp": datetime.now().isoformat(),
+    }
+
+
+@app.ping
+def health_check() -> PingStatus:
+    return PingStatus.HEALTHY
+
+
+if __name__ == "__main__":
+    app.run(port=8080, host="0.0.0.0")
