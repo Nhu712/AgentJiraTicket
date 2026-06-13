@@ -1,4 +1,3 @@
-import base64
 import os
 from datetime import datetime
 from typing import Annotated, Optional, TypedDict
@@ -19,13 +18,11 @@ LLM_MODEL = os.environ["LLM_MODEL"]
 LLM_BASE_URL = os.environ["LLM_BASE_URL"]
 LLM_API_KEY = os.environ["LLM_API_KEY"]
 JIRA_BASE_URL = os.environ["JIRA_BASE_URL"].rstrip("/")
-JIRA_EMAIL = os.environ["JIRA_EMAIL"].strip()
 JIRA_API_TOKEN = os.environ["JIRA_API_TOKEN"]
 JIRA_PROJECT_KEY = os.environ["JIRA_PROJECT_KEY"]
 
-_auth = base64.b64encode(f"{JIRA_EMAIL}:{JIRA_API_TOKEN}".encode()).decode()
 _headers = {
-    "Authorization": f"Basic {_auth}",
+    "Authorization": f"Bearer {JIRA_API_TOKEN}",
     "Content-Type": "application/json",
     "Accept": "application/json",
 }
@@ -216,12 +213,23 @@ app = GreenNodeAgentBaseApp()
 @app.entrypoint
 def handler(payload: dict, context: RequestContext) -> dict:
     message = payload.get("message", "")
-    result = graph.invoke({"messages": [("user", message)]})
-    return {
-        "status": "success",
-        "response": result["messages"][-1].content,
-        "timestamp": datetime.now().isoformat(),
-    }
+    if not message:
+        return {"status": "error", "response": "Missing 'message' in payload"}
+    try:
+        result = graph.invoke({"messages": [("user", message)]})
+        messages = result.get("messages", [])
+        if not messages:
+            return {"status": "error", "response": "Agent returned no messages"}
+        return {
+            "status": "success",
+            "response": messages[-1].content,
+            "timestamp": datetime.now().isoformat(),
+        }
+    except Exception as exc:
+        return {
+            "status": "error",
+            "response": f"Agent error: {exc}",
+        }
 
 
 @app.ping
