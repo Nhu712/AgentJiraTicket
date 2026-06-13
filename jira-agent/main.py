@@ -1,3 +1,4 @@
+import logging
 import os
 from datetime import datetime
 from typing import Annotated, Optional, TypedDict
@@ -13,6 +14,13 @@ from langgraph.prebuilt import ToolNode, tools_condition
 from greennode_agentbase import GreenNodeAgentBaseApp, PingStatus, RequestContext
 
 load_dotenv()
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
+log = logging.getLogger(__name__)
 
 LLM_MODEL = os.environ["LLM_MODEL"]
 LLM_BASE_URL = os.environ["LLM_BASE_URL"]
@@ -75,8 +83,11 @@ def _fetch_project_schema() -> str:
     return "\n".join(lines)
 
 
+log.info("Starting Jira agent | model=%s base_url=%s project=%s", LLM_MODEL, LLM_BASE_URL, JIRA_PROJECT_KEY)
+
 # Fetched once at startup; project schema rarely changes between requests.
 _PROJECT_SCHEMA = _fetch_project_schema()
+log.info("Project schema loaded (%d chars)", len(_PROJECT_SCHEMA))
 
 SYSTEM_PROMPT = f"""You are a Jira project management assistant for project {JIRA_PROJECT_KEY}.
 Instance: {JIRA_BASE_URL}
@@ -215,20 +226,36 @@ def handler(payload: dict, context: RequestContext) -> dict:
     message = payload.get("message", "")
     if not message:
         return {"status": "error", "response": "Missing 'message' in payload"}
+
+    log.info("→ User: %s", message)
     try:
         result = graph.invoke({"messages": [("user", message)]})
         messages = result.get("messages", [])
         if not messages:
+            log.warning("Agent returned no messages")
             return {"status": "error", "response": "Agent returned no messages"}
+
+        reply = messages[-1].content
+        log.info("← Agent: %s", reply[:200] + ("..." if len(reply) > 200 else ""))
+
+        tool_calls = [
+            m for m in messages
+            if hasattr(m, "tool_calls") and m.tool_calls
+        ]
+        for m in tool_calls:
+            for tc in m.tool_calls:
+                log.info("  [tool] %s(%s)", tc["name"], ", ".join(f"{k}={v!r}" for k, v in tc["args"].items()))
+
         return {
             "status": "success",
-            "response": messages[-1].content,
+            "response": reply,
             "timestamp": datetime.now().isoformat(),
         }
     except Exception as exc:
+        log.error("Handler error: %s", exc, exc_info=True)
         return {
             "status": "error",
-            "response": f"Agent error: {exc}",
+            "response": f"Agent error: {str(exc)}",
         }
 
 
