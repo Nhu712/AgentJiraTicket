@@ -41,28 +41,18 @@ JIRA_AUTH_TYPE = os.environ.get("JIRA_AUTH_TYPE", "Basic")
 JIRA_API_TOKEN = os.environ.get("JIRA_API_TOKEN", "MTY2MTQwNzY4MDE4OrmpBoNIz1iKoCCM63xJNA/THfTK")
 JIRA_EMAIL = os.environ.get("JIRA_EMAIL", "vothihuynhnhu2310@gmail.com")
 JIRA_PROJECT_KEY = os.environ.get("JIRA_PROJECT_KEY", "PCPOP")
+# User-facing browse URL (may differ from API base URL for Atlassian Cloud)
+JIRA_BROWSE_URL = os.environ.get("JIRA_BROWSE_URL", "https://vothihuynhnhu2310.atlassian.net").rstrip("/")
 
-def _build_headers() -> dict:
-    import base64
-    is_cloud = "atlassian.com" in JIRA_BASE_URL
-    if is_cloud and JIRA_EMAIL:
-        # Atlassian Cloud: Basic auth requires base64(email:api_token)
-        token = base64.b64encode(f"{JIRA_EMAIL}:{JIRA_API_TOKEN}".encode()).decode()
-        auth = f"Basic {token}"
-    else:
-        auth = f"{JIRA_AUTH_TYPE} {JIRA_API_TOKEN}"
-
-    headers = {
-        "Authorization": auth,
-        "Content-Type": "application/json",
-        "Accept": "application/json",
-    }
-    # Host header only needed for on-prem Jira (IP-based with virtual host)
-    if not is_cloud:
-        headers["Host"] = JIRA_HOST
-    return headers
-
-_headers = _build_headers()
+_is_cloud = "atlassian.com" in JIRA_BASE_URL
+_headers = {
+    "Authorization": f"{JIRA_AUTH_TYPE} {JIRA_API_TOKEN}",
+    "Content-Type": "application/json",
+    "Accept": "application/json",
+}
+# Host header only needed for on-prem Jira (IP-based virtual host routing)
+if not _is_cloud:
+    _headers["Host"] = JIRA_HOST
 
 import urllib3
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -170,23 +160,67 @@ Parse the user's message and extract values for every field present.
 Map each extracted value to the closest valid option in the schema.
 Do NOT invent or guess values for fields that are unclear — flag them.
 
+### Step 2b — Gather Bug Details (Bug type only)
+If the issue type is Bug (or likely a Bug) AND any of the following are missing
+from the conversation, ask them ALL in ONE message before proceeding:
+- **Reproduce steps**: exact steps to reproduce the bug
+- **Browser / device**: browser name+version, OS, device type
+- **Frequency & environment**: how often does it happen (% or always/sometimes)?
+  Which environment (staging / production / both)?
+- **Error message or log**: any console error, stack trace, or log snippet
+
+Only skip this step if all four points are already clearly answered in the
+conversation. Never ask them one-by-one across multiple messages — always batch
+into a single message. Do NOT proceed to Step 3 until these are answered.
+
 ### Step 3 — Resolve Missing Required Fields
 Compare extracted fields against the schema's required fields.
-For each required field that is missing or ambiguous, ask the user ONE
+For each required field that is missing or ambiguous (EXCEPT customfield_10042
+and customfield_10043 — handle those automatically in Step 3a), ask the user ONE
 consolidated follow-up (group all missing fields into a single message,
 never ask one field per message).
+
+### Step 3a — Auto-resolve Product Domain & Sub Domain
+customfield_10042 (Product Domain) and customfield_10043 (Sub Domain) are ALWAYS
+required. You MUST set them automatically — do NOT ask the user.
+
+Before creating the ticket:
+1. Call get_jira_custom_field_options("customfield_10042") and
+   get_jira_custom_field_options("customfield_10043") to get valid option IDs.
+2. Based on the ticket content and conversation context, pick the most appropriate
+   option for each field (use semantic reasoning — e.g. a finance internal tool maps
+   to Internal Tools; a customer-facing feature maps to Customer Experience).
+3. Include both fields in the create_jira_ticket call as custom_fields JSON:
+   '{{"customfield_10042": {{"id": "<chosen_id>"}}, "customfield_10043": {{"id": "<chosen_id>"}}}}'
+4. If truly ambiguous and you cannot determine a reasonable value even after
+   reading the options, ask the user with this exact format (do NOT expose raw
+   field IDs or Jira error text):
+
+   "Mình cần bạn xác nhận thêm 1-2 thông tin để tạo ticket:
+
+   **Product Domain** — lĩnh vực sản phẩm liên quan:
+   • [list each option name from get_jira_custom_field_options]
+
+   **Sub Domain** — mảng cụ thể hơn trong domain đó:
+   • [list each option name from get_jira_custom_field_options]
+
+   Bạn chọn phương án nào phù hợp nhất nhé?"
+
+   After the user answers, map their answer to the correct option ID and proceed.
 
 ### Step 4 — Confirm Before Creating
 Before calling create_jira_ticket, present a structured summary of all
 field values and ask the user to confirm or correct:
 
     📋 *Ticket Summary — please confirm:*
-    - Type       : Bug
-    - Summary    : Login fails on SSO with Chrome 124
-    - Priority   : High
-    - Assignee   : @nguyen.van.a
-    - Component  : Authentication
-    - Description: <first 100 chars>...
+    - Type          : Bug
+    - Summary       : Login fails on SSO with Chrome 124
+    - Priority      : High
+    - Assignee      : @nguyen.van.a
+    - Component     : Authentication
+    - Product Domain: Customer Experience
+    - Sub Domain    : Internal Tools
+    - Description   : <first 100 chars>...
     ➡ Reply *"confirm"* to create, or tell me what to change.
 
 Only call create_jira_ticket after the user explicitly confirms.
@@ -195,9 +229,31 @@ Only call create_jira_ticket after the user explicitly confirms.
 Call create_jira_ticket with the confirmed payload.
 Return the ticket key and direct URL to the user.
 
+## Handling Tool Errors
+When any tool raises an error, DO NOT forward the raw error text to the user.
+Instead, evaluate the error and decide the best action:
+
+1. **Error contains "Mình cần bạn xác nhận"** (Product Domain / Sub Domain missing):
+   Show the error text verbatim to the user — it already contains the question
+   in Vietnamese with available options. Wait for the user's answer, then map
+   their choice to the option id and retry create_jira_ticket.
+
+2. **Error mentions a required field the user can provide** (e.g. missing summary,
+   priority, component): Ask the user for that value in Vietnamese. Retry once
+   the user answers.
+
+3. **Error is a technical/system error the user cannot fix** (connection timeout,
+   auth failure, server 5xx): Tell the user briefly in Vietnamese that there was
+   a system error and suggest retrying, e.g.:
+   "Có lỗi kỹ thuật khi tạo ticket, bạn thử lại sau nhé."
+
+NEVER show raw field IDs (customfield_XXXXX), HTTP status codes, or stack traces
+to the user.
+
 ## Constraints
 - NEVER call create_jira_ticket without explicit user confirmation in Step 4
-- NEVER guess or default a required field silently — always ask
+- NEVER ask the user about customfield_10042 or customfield_10043 — always infer them
+- NEVER guess or default other required fields silently — always ask
 - NEVER present options not returned by get_project_schema
 - Ask all missing fields in ONE message, not one-by-one
 - Keep all messages concise and professional — no filler text
@@ -207,12 +263,53 @@ Return the ticket key and direct URL to the user.
 ## Output Format
 After successful creation, always reply with exactly:
 
-    ✅ Ticket created: {JIRA_BASE_URL}/browse/{{TICKET_KEY}}
+    ✅ Ticket created: [{{TICKET_KEY}}]({JIRA_BROWSE_URL}/browse/{{TICKET_KEY}}) — {{TICKET_SUMMARY}}
 
 ## Language Rule
 Detect the language of the user's message and reply in the same language
 throughout the entire conversation (English → English, Vietnamese → Vietnamese).
+STRICT: NEVER output Chinese characters (中文/漢字) under any circumstances,
+even partially. If you are about to write a Chinese word, replace it with the
+equivalent Vietnamese or English word instead.
 """
+
+
+def _get_custom_field_options_raw(field_id: str) -> list:
+    """Internal helper — same logic as get_jira_custom_field_options but callable from within tools."""
+    try:
+        ctx_resp = requests.get(
+            f"{JIRA_BASE_URL}/rest/api/3/field/{field_id}/context",
+            headers=_headers, timeout=10, verify=False,
+        )
+        if ctx_resp.ok:
+            contexts = ctx_resp.json().get("values", [])
+            if contexts:
+                ctx_id = contexts[0]["id"]
+                opt_resp = requests.get(
+                    f"{JIRA_BASE_URL}/rest/api/3/field/{field_id}/context/{ctx_id}/option",
+                    headers=_headers, timeout=10, verify=False,
+                )
+                if opt_resp.ok:
+                    return [{"id": v["id"], "value": v["value"]} for v in opt_resp.json().get("values", [])]
+    except Exception:
+        pass
+    try:
+        meta = requests.get(
+            f"{JIRA_BASE_URL}/rest/api/2/issue/createmeta",
+            params={"projectKeys": JIRA_PROJECT_KEY, "expand": "projects.issuetypes.fields"},
+            headers=_headers, timeout=15, verify=False,
+        )
+        if meta.ok:
+            projects = meta.json().get("projects", [])
+            if projects:
+                for itype in projects[0].get("issuetypes", []):
+                    field = itype.get("fields", {}).get(field_id, {})
+                    allowed = field.get("allowedValues", [])
+                    if allowed:
+                        return [{"id": v.get("id", ""), "value": v.get("value", v.get("name", ""))} for v in allowed]
+    except Exception:
+        pass
+    return []
 
 
 @tool
@@ -249,6 +346,7 @@ def create_jira_ticket(
         fields["priority"] = {"name": priority}
     if parsed_cf:
         fields.update(parsed_cf)
+
     log.info("Start to create ticket: %s", json.dumps(fields))
 
     payload = {"fields": fields}
@@ -277,14 +375,53 @@ def create_jira_ticket(
     if not resp.ok:
         errors = body.get("errors", {})
         msgs = body.get("errorMessages", [])
+
+        # Auto-strip fields that "cannot be set" on this screen and retry once
+        unset_fields = [
+            k for k, v in errors.items()
+            if "cannot be set" in str(v) or "not on the appropriate screen" in str(v)
+        ]
+        if unset_fields:
+            log.warning("[jira] Auto-stripping unsettable fields and retrying: %s", unset_fields)
+            for f in unset_fields:
+                payload["fields"].pop(f, None)
+            retry = requests.post(
+                f"{JIRA_BASE_URL}/rest/api/2/issue",
+                json=payload,
+                headers=_headers,
+                timeout=15,
+                verify=False,
+            )
+            if retry.ok:
+                body = retry.json()
+                key = body["key"]
+                return {"key": key, "id": body["id"], "url": f"{JIRA_BROWSE_URL}/browse/{key}"}
+            errors = retry.json().get("errors", {})
+            msgs = retry.json().get("errorMessages", [])
+
+        # If Product Domain or Sub Domain is among the errors, ask user in Vietnamese
+        DOMAIN_KEYS = {"customfield_10042", "customfield_10043", "Product Domain", "Sub Domain"}
+        if set(errors.keys()) & DOMAIN_KEYS:
+            opts_domain = _get_custom_field_options_raw("customfield_10042")
+            opts_subdomain = _get_custom_field_options_raw("customfield_10043")
+            domain_list = "\n".join(f"  • {o['value']} (id: {o['id']})" for o in opts_domain) if opts_domain else "  (không lấy được danh sách)"
+            subdomain_list = "\n".join(f"  • {o['value']} (id: {o['id']})" for o in opts_subdomain) if opts_subdomain else "  (không lấy được danh sách)"
+            raise ValueError(
+                "Mình cần bạn xác nhận thêm 2 thông tin để tạo ticket:\n\n"
+                f"Product Domain — lĩnh vực sản phẩm liên quan:\n{domain_list}\n\n"
+                f"Sub Domain — mảng cụ thể hơn trong domain đó:\n{subdomain_list}\n\n"
+                "Bạn chọn phương án nào phù hợp nhất nhé?"
+            )
+
         detail = "; ".join([f"{k}: {v}" for k, v in errors.items()] + msgs)
         log.warning("[jira] Validation error (HTTP %d): %s", resp.status_code, detail)
-        raise ValueError(f"Jira validation error — {detail}. Please provide the missing fields.")
+        raise ValueError(f"Lỗi tạo ticket: {detail}")
 
+    key = body["key"]
     return {
-        "key": body["key"],
+        "key": key,
         "id": body["id"],
-        "url": f"{JIRA_BASE_URL}/browse/{body['key']}",
+        "url": f"{JIRA_BROWSE_URL}/browse/{key}",
     }
 
 
@@ -339,7 +476,61 @@ def search_jira_tickets(jql: str, max_results: int = 10) -> list:
         return []
 
 
-_tools = [create_jira_ticket, get_jira_ticket, search_jira_tickets]
+@tool
+def get_jira_custom_field_options(field_id: str) -> list:
+    """
+    Fetch allowed options for a custom select/dropdown field.
+    Call this when create_jira_ticket returns a validation error about a required
+    custom field — pass the field id (e.g. 'customfield_10042') to get valid options.
+    Returns a list of {id, value} dicts, or [] if the options cannot be retrieved.
+    """
+    try:
+        # Try field context options (API v3)
+        ctx_resp = requests.get(
+            f"{JIRA_BASE_URL}/rest/api/3/field/{field_id}/context",
+            headers=_headers,
+            timeout=10,
+            verify=False,
+        )
+        if ctx_resp.ok:
+            contexts = ctx_resp.json().get("values", [])
+            if contexts:
+                ctx_id = contexts[0]["id"]
+                opt_resp = requests.get(
+                    f"{JIRA_BASE_URL}/rest/api/3/field/{field_id}/context/{ctx_id}/option",
+                    headers=_headers,
+                    timeout=10,
+                    verify=False,
+                )
+                if opt_resp.ok:
+                    return [{"id": v["id"], "value": v["value"]} for v in opt_resp.json().get("values", [])]
+    except Exception as exc:
+        log.warning("[jira] get_field_options(%s) failed: %s", field_id, exc)
+
+    # Fallback: extract from createmeta
+    try:
+        meta = requests.get(
+            f"{JIRA_BASE_URL}/rest/api/2/issue/createmeta",
+            params={"projectKeys": JIRA_PROJECT_KEY, "expand": "projects.issuetypes.fields"},
+            headers=_headers,
+            timeout=15,
+            verify=False,
+        )
+        if meta.ok:
+            projects = meta.json().get("projects", [])
+            if projects:
+                for itype in projects[0].get("issuetypes", []):
+                    field = itype.get("fields", {}).get(field_id, {})
+                    allowed = field.get("allowedValues", [])
+                    if allowed:
+                        return [{"id": v.get("id", ""), "value": v.get("value", v.get("name", ""))} for v in allowed]
+    except Exception as exc:
+        log.warning("[jira] get_field_options createmeta fallback failed: %s", exc)
+
+    return []
+
+
+_tools = [create_jira_ticket, get_jira_ticket, search_jira_tickets, get_jira_custom_field_options]
 
 llm = ChatOpenAI(model=LLM_MODEL, base_url=LLM_BASE_URL, api_key=LLM_API_KEY)
 llm_with_tools = llm.bind_tools(_tools)

@@ -132,15 +132,16 @@
     .msg-row.other { flex-direction: row; }
 
     .avatar {
-      width: 30px;
-      height: 30px;
+      width: 32px;
+      height: 32px;
       border-radius: 50%;
       flex-shrink: 0;
       display: flex;
       align-items: center;
       justify-content: center;
-      font-size: 13px;
-      font-weight: 600;
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: -0.5px;
     }
 
     .msg-row.user  .avatar { background: #1d6bbf; color: #fff; }
@@ -400,7 +401,7 @@
       rows="1"
       placeholder="Nhập hội thoại... dùng @agent để gọi AI"
     ></textarea>
-    <button id="send-btn" title="Send (Enter)">
+    <button id="send-btn" type="button" title="Send (Enter)">
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
         <line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/>
       </svg>
@@ -459,8 +460,8 @@
 
   // ── Parse speaker prefix from content ─────────────────────────
   const SPEAKERS = {
-    'Stakeholder - Lan': { side: 'user',  avatar: 'L' },
-    'PO - Nam':          { side: 'other', avatar: 'N' },
+    'Dev': { side: 'user',  avatar: 'Dev' },
+    'QC':  { side: 'other', avatar: 'QC'  },
   };
 
   function parseSpeaker(content) {
@@ -593,10 +594,13 @@
   }
 
   // ── Send ───────────────────────────────────────────────────────
+  let _sending = false;
   async function sendMessage() {
+    if (_sending) return;
     const text = inputEl.value.trim();
     if (!text) return;
 
+    _sending = true;
     inputEl.value = '';
     inputEl.style.height = 'auto';
     sendBtn.disabled = true;
@@ -604,8 +608,9 @@
     // Always display + save the message first
     addMessage('user', text);
 
-    // Only call the agent when message contains @agent
-    if (!/@agent\b/i.test(text)) {
+    // Call endpoint if: message has @agent OR agent has already replied (ongoing conversation)
+    const agentHasReplied = history.some(m => m.role === 'assistant');
+    if (!/@agent\b/i.test(text) && !agentHasReplied) {
       sendBtn.disabled = false;
       inputEl.focus();
       return;
@@ -635,6 +640,7 @@
       hideTyping();
       addMessage('assistant', `⚠️ Failed to reach the agent: ${err.message}`, true);
     } finally {
+      _sending = false;
       sendBtn.disabled = false;
       inputEl.focus();
     }
@@ -693,25 +699,9 @@
 
   // ── Sample conversation ────────────────────────────────────────
   const SAMPLE = [
-    `Stakeholder - Lan:\nNam ơi, sáng nay bên CS báo nhiều khách thanh toán VNPay thành công nhưng đơn hàng vẫn bị giữ ở trạng thái "Pending Payment". Khách bị trừ tiền rồi nhưng app không hiện đơn đã thanh toán.`,
-    `PO - Nam:\nVấn đề này xảy ra trên app mobile hay web? Và bắt đầu từ lúc nào?`,
-    `Stakeholder - Lan:\nÀ để chị nói rõ lại, không phải native app. Xảy ra trên mobile web, cả Chrome Android và Safari iOS đều có case. Bắt đầu khoảng 09:00 ngày 14/06/2026, sau release 2.8.0 tối qua.`,
-    `PO - Nam:\nCó ảnh hưởng toàn bộ payment gateway không hay chỉ VNPay?`,
-    `Stakeholder - Lan:\nHiện tại CS chỉ xác nhận trên VNPay. MoMo và COD vẫn bình thường. Có khoảng 37 đơn bị ảnh hưởng tính đến 11:30. Một số order ví dụ: ORD-10482, ORD-10495, ORD-10507.`,
-    `PO - Nam:\nFlow reproduce cụ thể thế nào?`,
-    `Stakeholder - Lan:\nUser vào mobile web, thêm sản phẩm vào giỏ, checkout, chọn VNPay, thanh toán thành công trên cổng VNPay. Sau khi redirect về website thì trang thank-you không hiện, đơn vẫn Pending Payment. Khách cũng không nhận email xác nhận đơn hàng.`,
-    `PO - Nam:\nExpected behavior là gì?`,
-    `Stakeholder - Lan:\nSau khi VNPay trả kết quả thành công, đơn phải chuyển sang Paid hoặc Confirmed trong vòng tối đa 1 phút, hiển thị trang thank-you và gửi email xác nhận cho khách.`,
-    `PO - Nam:\nActual behavior hiện tại là payment captured rồi nhưng order status không update đúng, đúng không?`,
-    `Stakeholder - Lan:\nĐúng. Tiền đã capture thành công bên VNPay, nhưng hệ thống mình không update trạng thái đơn. CS đang phải sync thủ công mỗi 30 phút để tránh khách gọi lên quá nhiều.`,
-    `PO - Nam:\nImpact về business thế nào? Có cần mark Critical không?`,
-    `Stakeholder - Lan:\nBan đầu chị nghĩ P1/Critical vì liên quan tiền, nhưng vì chỉ ảnh hưởng VNPay mobile web và có workaround thủ công nên để High cũng được. Tuy nhiên cần xử lý trong hôm nay, trước 17:00 ngày 14/06/2026.`,
-    `PO - Nam:\nTicket này nên là Bug, component Payment Gateway. Assign cho Huy backend payment được không?`,
-    `Stakeholder - Lan:\nĐúng rồi, tạo Bug giúp chị. Component là Payment Gateway. Assign Huy Phạm nếu trên Jira có user đó. Label thêm giúp chị: vnpay, payment-status, production, revenue-impact.`,
-    `PO - Nam:\nCó acceptance criteria nào cần đưa vào ticket không?`,
-    `Stakeholder - Lan:\nCó:\n1. Khi VNPay callback success, order status phải chuyển khỏi Pending Payment sang Paid hoặc Confirmed.\n2. User phải được redirect về thank-you page sau thanh toán thành công.\n3. Email xác nhận đơn hàng phải được gửi trong vòng 1 phút.\n4. Các đơn đã bị kẹt Pending Payment từ 09:00 ngày 14/06/2026 phải được reconcile lại.\n5. Nếu callback từ VNPay lỗi hoặc timeout, hệ thống phải ghi log và trigger alert cho team Payment.`,
-    `PO - Nam:\nCó attachment hay link tham khảo không?`,
-    `Stakeholder - Lan:\nCó dashboard Metabase "VNPay pending orders 14-06" và file export danh sách order ID, chị sẽ gửi trong thread. Không có PII trong file export.`,
+    `QC:\nBị bug: user không xóa được tài khoản của mình.`,
+    `Dev:\nỜ tính năng đó chưa làm mà.`,
+    `QC:\nVậy sao? Tưởng có rồi.`,
   ];
 
   function loadSample() {
