@@ -35,19 +35,34 @@ CORP_JIRA_HOST = os.environ.get("CORP_JIRA_HOST", "jira.zalopay.vn")
 CORP_JIRA_API_TOKEN = os.environ.get("CORP_JIRA_API_TOKEN", "MTY2MTQwNzY4MDE4OrmpBoNIz1iKoCCM63xJNA/THfTK")
 CORP_JIRA_PROJECT_KEY = os.environ.get("CORP_JIRA_PROJECT_KEY", "PCPOP")
 
-# Personal Jira (Atlassian Cloud, active)
-JIRA_BASE_URL = os.environ.get("JIRA_BASE_URL", "https://api.atlassian.com/ex/jira/d0c9c91d-e546-418a-b02d-42949ed3db1e").rstrip("/")
-JIRA_HOST = os.environ.get("JIRA_HOST", "api.atlassian.com")
+JIRA_BASE_URL = os.environ.get("JIRA_BASE_URL", "https://10.30.94.60").rstrip("/")
+JIRA_HOST = os.environ.get("JIRA_HOST", "jira.zalopay.vn")
 JIRA_AUTH_TYPE = os.environ.get("JIRA_AUTH_TYPE", "Basic")
-JIRA_API_TOKEN = os.environ.get("JIRA_API_TOKEN", "")
-JIRA_PROJECT_KEY = os.environ.get("JIRA_PROJECT_KEY", "SAM1")
+JIRA_API_TOKEN = os.environ.get("JIRA_API_TOKEN", "MTY2MTQwNzY4MDE4OrmpBoNIz1iKoCCM63xJNA/THfTK")
+JIRA_EMAIL = os.environ.get("JIRA_EMAIL", "vothihuynhnhu2310@gmail.com")
+JIRA_PROJECT_KEY = os.environ.get("JIRA_PROJECT_KEY", "PCPOP")
 
-_headers = {
-    "Authorization": f"{JIRA_AUTH_TYPE} {JIRA_API_TOKEN}",
-    "Content-Type": "application/json",
-    "Accept": "application/json",
-    "Host": JIRA_HOST,
-}
+def _build_headers() -> dict:
+    import base64
+    is_cloud = "atlassian.com" in JIRA_BASE_URL
+    if is_cloud and JIRA_EMAIL:
+        # Atlassian Cloud: Basic auth requires base64(email:api_token)
+        token = base64.b64encode(f"{JIRA_EMAIL}:{JIRA_API_TOKEN}".encode()).decode()
+        auth = f"Basic {token}"
+    else:
+        auth = f"{JIRA_AUTH_TYPE} {JIRA_API_TOKEN}"
+
+    headers = {
+        "Authorization": auth,
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+    }
+    # Host header only needed for on-prem Jira (IP-based with virtual host)
+    if not is_cloud:
+        headers["Host"] = JIRA_HOST
+    return headers
+
+_headers = _build_headers()
 
 import urllib3
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -297,26 +312,31 @@ def get_jira_ticket(ticket_key: str) -> dict:
 @tool
 def search_jira_tickets(jql: str, max_results: int = 10) -> list:
     """Search Jira issues with JQL. Example: 'project=PROJ AND status=Open ORDER BY created DESC'."""
-    resp = requests.get(
-        f"{JIRA_BASE_URL}/rest/api/2/issue/search",
-        params={
-            "jql": jql,
-            "maxResults": max_results,
-            "fields": "summary,status,priority,issuetype",
-        },
-        headers=_headers,
-        timeout=15,
-    )
-    resp.raise_for_status()
-    return [
-        {
-            "key": i["key"],
-            "summary": i["fields"]["summary"],
-            "status": i["fields"]["status"]["name"],
-            "url": f"{JIRA_BASE_URL}/browse/{i['key']}",
-        }
-        for i in resp.json().get("issues", [])
-    ]
+    try:
+        resp = requests.get(
+            f"{JIRA_BASE_URL}/rest/api/2/issue/search",
+            params={
+                "jql": jql,
+                "maxResults": max_results,
+                "fields": "summary,status,priority,issuetype",
+            },
+            headers=_headers,
+            timeout=15,
+            verify=False,
+        )
+        resp.raise_for_status()
+        return [
+            {
+                "key": i["key"],
+                "summary": i["fields"]["summary"],
+                "status": i["fields"]["status"]["name"],
+                "url": f"{JIRA_BASE_URL}/browse/{i['key']}",
+            }
+            for i in resp.json().get("issues", [])
+        ]
+    except Exception as exc:
+        log.warning("[jira] search failed (jql=%r): %s", jql, exc)
+        return []
 
 
 _tools = [create_jira_ticket, get_jira_ticket, search_jira_tickets]
