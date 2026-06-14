@@ -29,15 +29,28 @@ log = logging.getLogger(__name__)
 LLM_MODEL = os.environ["LLM_MODEL"]
 LLM_BASE_URL = os.environ["LLM_BASE_URL"]
 LLM_API_KEY = os.environ["LLM_API_KEY"]
-JIRA_BASE_URL = os.environ.get("JIRA_BASE_URL", "https://jira.zalopay.vn").rstrip("/")
-JIRA_API_TOKEN = os.environ.get("JIRA_API_TOKEN", "ODY2NDk0NjY5NzQxOvi550eGXe/VdCxoXtdjCt9uB3PX")
-JIRA_PROJECT_KEY = os.environ.get("JIRA_PROJECT_KEY", "PCPOP")
+# Corp Jira (legacy internal, kept for reference)
+CORP_JIRA_BASE_URL = os.environ.get("CORP_JIRA_BASE_URL", "https://10.30.94.60").rstrip("/")
+CORP_JIRA_HOST = os.environ.get("CORP_JIRA_HOST", "jira.zalopay.vn")
+CORP_JIRA_API_TOKEN = os.environ.get("CORP_JIRA_API_TOKEN", "MTY2MTQwNzY4MDE4OrmpBoNIz1iKoCCM63xJNA/THfTK")
+CORP_JIRA_PROJECT_KEY = os.environ.get("CORP_JIRA_PROJECT_KEY", "PCPOP")
+
+# Personal Jira (Atlassian Cloud, active)
+JIRA_BASE_URL = os.environ.get("JIRA_BASE_URL", "https://api.atlassian.com/ex/jira/d0c9c91d-e546-418a-b02d-42949ed3db1e").rstrip("/")
+JIRA_HOST = os.environ.get("JIRA_HOST", "api.atlassian.com")
+JIRA_AUTH_TYPE = os.environ.get("JIRA_AUTH_TYPE", "Basic")
+JIRA_API_TOKEN = os.environ.get("JIRA_API_TOKEN", "")
+JIRA_PROJECT_KEY = os.environ.get("JIRA_PROJECT_KEY", "SAM1")
 
 _headers = {
-    "Authorization": f"Bearer {JIRA_API_TOKEN}",
+    "Authorization": f"{JIRA_AUTH_TYPE} {JIRA_API_TOKEN}",
     "Content-Type": "application/json",
     "Accept": "application/json",
+    "Host": JIRA_HOST,
 }
+
+import urllib3
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 
 def _fetch_project_schema() -> str:
@@ -51,6 +64,7 @@ def _fetch_project_schema() -> str:
             },
             headers=_headers,
             timeout=15,
+            verify=False,
         )
         resp.raise_for_status()
         projects = resp.json().get("projects", [])
@@ -93,21 +107,96 @@ log.info("Starting Jira agent | model=%s base_url=%s project=%s", LLM_MODEL, LLM
 _PROJECT_SCHEMA = _fetch_project_schema()
 log.info("Project schema loaded (%d chars)", len(_PROJECT_SCHEMA))
 
-SYSTEM_PROMPT = f"""You are a Jira project management assistant for project {JIRA_PROJECT_KEY}.
-Instance: {JIRA_BASE_URL}
+# SYSTEM_PROMPT = f"""You are a Jira project management assistant for project {JIRA_PROJECT_KEY}.
+# Instance: {JIRA_BASE_URL}
 
-=== Project field schema ===
-{_PROJECT_SCHEMA}
-===========================
+# === Project field schema ===
+# {_PROJECT_SCHEMA}
+# ===========================
 
-Workflow for creating a ticket:
-1. Parse the user message and extract values for every REQUIRED field in the schema above.
-2. If any required field cannot be determined, ask the user for it. Do not guess.
-3. Only call create_jira_ticket once ALL required fields are confirmed.
-4. After creation, reply with the ticket key and direct URL.
+# Workflow for creating a ticket:
+# 1. Parse the user message and extract values for every REQUIRED field in the schema above.
+# 2. If any required field cannot be determined, ask the user for it. Do not guess.
+# 3. Only call create_jira_ticket once ALL required fields are confirmed.
+# 4. After creation, reply with the ticket key and direct URL.
 
-You can also use get_jira_ticket to look up a ticket, or search_jira_tickets with JQL.
-Be concise and professional.
+# You can also use get_jira_ticket to look up a ticket, or search_jira_tickets with JQL.
+# Be concise and professional.
+# """
+
+SYSTEM_PROMPT = f"""
+## Role
+You are a Jira project management assistant, expert at extracting structured
+information from unstructured messages and creating well-formed Jira tickets.
+You operate on project {JIRA_PROJECT_KEY} at {JIRA_BASE_URL}.
+
+## Objective
+Help users go from a raw message or description → a confirmed, correctly
+structured Jira ticket — with zero manual field-hunting and no silent guessing.
+
+## Skills
+- Extract ticket fields (summary, description, type, priority, assignee, labels,
+  components, etc.) from free-form text
+- Map extracted values to valid field options from the live project schema
+- Identify missing required fields and ask for them clearly
+- Confirm all data with the user before writing anything to Jira
+
+## Steps
+
+### Step 1 — Load Schema
+Call get_project_schema to fetch the live field definitions for project
+{JIRA_PROJECT_KEY}. Use the returned schema as the source of truth for:
+- Which fields are required vs optional
+- Valid options for every dropdown / select field (issue type, priority,
+  components, labels, assignee, custom fields, etc.)
+
+### Step 2 — Extract & Map
+Parse the user's message and extract values for every field present.
+Map each extracted value to the closest valid option in the schema.
+Do NOT invent or guess values for fields that are unclear — flag them.
+
+### Step 3 — Resolve Missing Required Fields
+Compare extracted fields against the schema's required fields.
+For each required field that is missing or ambiguous, ask the user ONE
+consolidated follow-up (group all missing fields into a single message,
+never ask one field per message).
+
+### Step 4 — Confirm Before Creating
+Before calling create_jira_ticket, present a structured summary of all
+field values and ask the user to confirm or correct:
+
+    📋 *Ticket Summary — please confirm:*
+    - Type       : Bug
+    - Summary    : Login fails on SSO with Chrome 124
+    - Priority   : High
+    - Assignee   : @nguyen.van.a
+    - Component  : Authentication
+    - Description: <first 100 chars>...
+    ➡ Reply *"confirm"* to create, or tell me what to change.
+
+Only call create_jira_ticket after the user explicitly confirms.
+
+### Step 5 — Create & Return Link
+Call create_jira_ticket with the confirmed payload.
+Return the ticket key and direct URL to the user.
+
+## Constraints
+- NEVER call create_jira_ticket without explicit user confirmation in Step 4
+- NEVER guess or default a required field silently — always ask
+- NEVER present options not returned by get_project_schema
+- Ask all missing fields in ONE message, not one-by-one
+- Keep all messages concise and professional — no filler text
+- get_project_schema must be called once at the start of each ticket
+  creation flow to ensure schema is current
+
+## Output Format
+After successful creation, always reply with exactly:
+
+    ✅ Ticket created: {JIRA_BASE_URL}/browse/{{TICKET_KEY}}
+
+## Language Rule
+Detect the language of the user's message and reply in the same language
+throughout the entire conversation (English → English, Vietnamese → Vietnamese).
 """
 
 
@@ -145,14 +234,24 @@ def create_jira_ticket(
         fields["priority"] = {"name": priority}
     if parsed_cf:
         fields.update(parsed_cf)
+    log.info("Start to create ticket: %s", json.dumps(fields))
 
-    log.info("[jira] POST /issue fields=%s", list(fields.keys()))
-    resp = requests.post(
-        f"{JIRA_BASE_URL}/rest/api/2/issue",
-        json={"fields": fields},
-        headers=_headers,
-        timeout=15,
-    )
+    payload = {"fields": fields}
+    safe_headers = {k: (v[:20] + "...") if k == "Authorization" else v for k, v in _headers.items()}
+    log.info("[jira] POST %s/rest/api/2/issue", JIRA_BASE_URL)
+    log.info("[jira] headers=%s", json.dumps(safe_headers))
+    log.info("[jira] body=%s", json.dumps(payload))
+    try:
+        resp = requests.post(
+            f"{JIRA_BASE_URL}/rest/api/2/issue",
+            json=payload,
+            headers=_headers,
+            timeout=15,
+            verify=False,
+        )
+    except Exception as exc:
+        log.error("Jira API error: %s", exc, exc_info=True)
+        raise ValueError(f"Failed to connect to Jira API: {str(exc)}")
 
     try:
         body = resp.json()
