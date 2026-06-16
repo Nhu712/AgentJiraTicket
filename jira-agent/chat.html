@@ -412,18 +412,25 @@
     .case-title-txt { color: var(--text); font-weight: 500; }
     .case-progress-txt { color: var(--text-muted); margin-left: auto; font-size: 11px; }
 
-    /* ── Countdown chip ────────────────────────────────────────── */
-    .demo-countdown {
-      align-self: center;
-      padding: 5px 12px;
-      border-radius: 20px;
-      background: var(--surface2);
-      border: 1px dashed var(--border);
-      font-size: 12px;
-      color: var(--text-muted);
-      animation: fadeIn 0.3s ease;
-      margin: 4px 0;
+    /* ── Next-case header button ───────────────────────────────── */
+    .btn-next-case {
+      display: none;
+      align-items: center;
+      gap: 6px;
+      padding: 7px 14px;
+      background: var(--accent);
+      border: none;
+      border-radius: 8px;
+      color: #fff;
+      font-size: 13px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: background 0.15s, transform 0.1s;
+      white-space: nowrap;
     }
+    .btn-next-case:hover  { background: #1d4ed8; }
+    .btn-next-case:active { transform: scale(0.96); }
+    .btn-next-case.visible { display: flex; }
   </style>
 </head>
 <body>
@@ -436,12 +443,15 @@
       <p>Conversation history preserved per session</p>
     </div>
   </div>
-  <button class="btn-clear" id="clear-btn">
-    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-      <polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4h6v2"/>
-    </svg>
-    Clear chat
-  </button>
+  <div style="display:flex;gap:8px;align-items:center">
+    <button class="btn-next-case" id="next-case-btn"></button>
+    <button class="btn-clear" id="clear-btn">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4h6v2"/>
+      </svg>
+      Clear chat
+    </button>
+  </div>
 </header>
 
 <div id="messages">
@@ -478,6 +488,7 @@
   const inputEl     = document.getElementById('user-input');
   const sendBtn     = document.getElementById('send-btn');
   const clearBtn    = document.getElementById('clear-btn');
+  const nextCaseBtn = document.getElementById('next-case-btn');
   const emptyState  = document.getElementById('empty-state');
 
   // ── Marked config ──────────────────────────────────────────────
@@ -625,16 +636,31 @@
   }
 
   // ── Build context string for the API call ─────────────────────
-  // Called AFTER addMessage, so history already includes userText as the last item.
-  // We use history[:-1] as prior context and append userText as the final turn.
+  // Prepends demo conversation (if active) + real chat history as context.
   function buildMessagePayload(userText) {
+    const parts = [];
+
+    // Demo conversation context — injected automatically when @agent is called
+    if (typeof _demoCaseMessages !== 'undefined' && _demoCaseMessages.length > 0) {
+      const demoLines = _demoCaseMessages.map(content => {
+        const { speaker, body } = parseSpeaker(content);
+        return speaker ? `${speaker}: ${body}` : content;
+      }).join('\n');
+      parts.push(`[Demo conversation]\n${demoLines}\n[End of demo conversation]`);
+    }
+
+    // Real chat history from this session
     const all = history.slice(-(MAX_TURNS * 2 + 1));
-    const priorTurns = all.slice(0, -1); // everything except the just-added message
-    if (priorTurns.length === 0) return userText;
-    const lines = priorTurns.map(m =>
-      `${m.role === 'user' ? 'User' : 'Assistant'}: ${m.content}`
-    ).join('\n');
-    return `[Previous conversation]\n${lines}\n[End of history]\n\nUser: ${userText}`;
+    const priorTurns = all.slice(0, -1);
+    if (priorTurns.length > 0) {
+      const lines = priorTurns.map(m =>
+        `${m.role === 'user' ? 'User' : 'Assistant'}: ${m.content}`
+      ).join('\n');
+      parts.push(`[Previous conversation]\n${lines}\n[End of history]`);
+    }
+
+    if (parts.length === 0) return userText;
+    return parts.join('\n\n') + `\n\nUser: ${userText}`;
   }
 
   // ── Append message to DOM + history ───────────────────────────
@@ -755,8 +781,16 @@
     inputEl.style.height = Math.min(inputEl.scrollHeight, 140) + 'px';
   });
 
-  sendBtn.addEventListener('click', () => { stopDemo(); sendMessage(); });
-  clearBtn.addEventListener('click', () => { stopDemo(); clearChat(); });
+  sendBtn.addEventListener('click', sendMessage);
+  clearBtn.addEventListener('click', () => {
+    stopDemo();
+    _demoCaseMessages = [];
+    nextCaseBtn.classList.remove('visible');
+    const banner = document.getElementById('case-banner');
+    if (banner) banner.remove();
+    clearChat();
+  });
+  nextCaseBtn.addEventListener('click', advanceDemo);
 
   // ── Demo data ──────────────────────────────────────────────────
   const HAPPY_01 = [
@@ -791,17 +825,17 @@
   ];
 
   const DEMO_CASES = [
-    { tag: 'HAPPY PATH', tagCls: 'happy',   title: 'Feature Request',       messages: HAPPY_01 },
-    { tag: 'HAPPY PATH', tagCls: 'happy',   title: 'Bug Report',             messages: HAPPY_02 },
-    { tag: 'EDGE CASE',  tagCls: 'edge',    title: 'Minimal Info',           messages: EDGE_04  },
-    { tag: 'COMPLEX',    tagCls: 'complex', title: 'Estimate Negotiation',   messages: COMPLEX_07 },
+    { tag: 'HAPPY PATH', tagCls: 'happy',   title: 'Feature Request',     messages: HAPPY_01   },
+    { tag: 'HAPPY PATH', tagCls: 'happy',   title: 'Bug Report',          messages: HAPPY_02   },
+    { tag: 'EDGE CASE',  tagCls: 'edge',    title: 'Minimal Info',        messages: EDGE_04    },
+    { tag: 'COMPLEX',    tagCls: 'complex', title: 'Estimate Negotiation', messages: COMPLEX_07 },
   ];
 
   // ── Demo runner ────────────────────────────────────────────────
-  let _demoRunning = false;
-  let _demoAborted = false;
-  let _demoCancelFn = null;
-  let _countdownEl  = null;
+  let _demoRunning      = false;
+  let _demoCancelFn     = null;
+  let _demoCaseIdx      = 0;
+  let _demoCaseMessages = []; // current case messages — injected into @agent calls
 
   function _cancelableDelay(ms) {
     return new Promise(resolve => {
@@ -810,15 +844,26 @@
     });
   }
 
+  // Stop auto-play; keep button + demo context intact so user can still @agent
   function stopDemo() {
     if (!_demoRunning) return;
-    _demoAborted = true;
     _demoRunning = false;
     if (_demoCancelFn) { _demoCancelFn(); _demoCancelFn = null; }
     hideTyping();
-    _hideDemoCountdown();
-    const banner = document.getElementById('case-banner');
-    if (banner) banner.remove();
+  }
+
+  // Advance to next case (or restart); clears chat and plays next
+  function advanceDemo() {
+    stopDemo();
+    const next = (_demoCaseIdx + 1) % DEMO_CASES.length;
+    _playCase(next);
+  }
+
+  function _updateNextBtn(idx) {
+    const nextIdx = (idx + 1) % DEMO_CASES.length;
+    const isLast  = idx === DEMO_CASES.length - 1;
+    nextCaseBtn.textContent = isLast ? '🔄 Restart' : `▶ ${DEMO_CASES[nextIdx].title}`;
+    nextCaseBtn.classList.add('visible');
   }
 
   function _showCaseBanner(c, idx, total) {
@@ -835,23 +880,8 @@
     scrollDown();
   }
 
-  function _showDemoCountdown(text) {
-    if (!_countdownEl) {
-      _countdownEl = document.createElement('div');
-      _countdownEl.className = 'demo-countdown';
-      messagesEl.appendChild(_countdownEl);
-    }
-    _countdownEl.textContent = text;
-    scrollDown();
-  }
-
-  function _hideDemoCountdown() {
-    if (_countdownEl) { _countdownEl.remove(); _countdownEl = null; }
-  }
-
   function _clearDemoMessages() {
     [...messagesEl.children].forEach(el => { if (el.id !== 'empty-state') el.remove(); });
-    _countdownEl = null;
   }
 
   function _renderDemoMsg(content) {
@@ -871,44 +901,36 @@
     return Math.min(3200, Math.max(800, words * 85));
   }
 
-  async function _runDemoLoop() {
+  async function _playCase(idx) {
+    _demoCaseIdx      = idx;
+    const c           = DEMO_CASES[idx];
+    _demoCaseMessages = c.messages; // save for @agent context
+
+    // Reset chat state for this case
+    _clearDemoMessages();
+    history = [];
+    clearStorage();
+
+    _showCaseBanner(c, idx + 1, DEMO_CASES.length);
+    _updateNextBtn(idx);
+
     _demoRunning = true;
-    _demoAborted = false;
-
-    while (!_demoAborted) {
-      for (let i = 0; i < DEMO_CASES.length; i++) {
-        if (_demoAborted) return;
-        const c = DEMO_CASES[i];
-
-        _showCaseBanner(c, i + 1, DEMO_CASES.length);
-
-        for (const content of c.messages) {
-          if (_demoAborted) return;
-          showTyping();
-          await _cancelableDelay(_typingDelay(content));
-          if (_demoAborted) { hideTyping(); return; }
-          hideTyping();
-          _renderDemoMsg(content);
-          await _cancelableDelay(_readDelay(content));
-        }
-
-        if (_demoAborted) return;
-
-        const isLast = i === DEMO_CASES.length - 1;
-        for (let s = 10; s >= 1; s--) {
-          if (_demoAborted) return;
-          _showDemoCountdown(`⏱ ${isLast ? 'Restarting' : 'Next case'} in ${s}s`);
-          await _cancelableDelay(1000);
-        }
-        if (!_demoAborted) _clearDemoMessages();
-      }
+    for (const content of c.messages) {
+      if (!_demoRunning) return;
+      showTyping();
+      await _cancelableDelay(_typingDelay(content));
+      if (!_demoRunning) { hideTyping(); return; }
+      hideTyping();
+      _renderDemoMsg(content);
+      await _cancelableDelay(_readDelay(content));
     }
+    _demoRunning = false;
   }
 
   // ── Init ───────────────────────────────────────────────────────
   restoreHistory();
   if (history.length === 0) {
-    _runDemoLoop();
+    _playCase(0);
   } else {
     syncEmptyState();
   }
