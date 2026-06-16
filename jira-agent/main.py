@@ -1,16 +1,28 @@
+import asyncio
 import json
 import logging
 import os
 from datetime import datetime
-from typing import Annotated, Optional, TypedDict
+from typing import Annotated, Dict, List, Optional, TypedDict
 
 import requests
+from botbuilder.core import (
+    ActivityHandler,
+    BotFrameworkAdapter,
+    BotFrameworkAdapterSettings,
+    TurnContext,
+)
+from botbuilder.schema import Activity, ActivityTypes
 from dotenv import load_dotenv
 from langchain_core.tools import tool
 from langchain_openai import ChatOpenAI
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode, tools_condition
+from starlette.middleware import Middleware as _StarletteMiddleware
+from starlette.requests import Request as _StarletteRequest
+from starlette.responses import JSONResponse as _StarletteJSONResponse
+from starlette.responses import Response as _StarletteResponse
 
 from greennode_agentbase import GreenNodeAgentBaseApp, PingStatus, RequestContext
 
@@ -38,19 +50,18 @@ CORP_JIRA_PROJECT_KEY = os.environ.get("CORP_JIRA_PROJECT_KEY", "PCPOP")
 JIRA_BASE_URL = os.environ.get("JIRA_BASE_URL", "https://10.30.94.60").rstrip("/")
 JIRA_HOST = os.environ.get("JIRA_HOST", "jira.zalopay.vn")
 JIRA_AUTH_TYPE = os.environ.get("JIRA_AUTH_TYPE", "Basic")
-JIRA_API_TOKEN = os.environ.get("JIRA_API_TOKEN", "MTY2MTQwNzY4MDE4OrmpBoNIz1iKoCCM63xJNA/THfTK")
-JIRA_EMAIL = os.environ.get("JIRA_EMAIL", "vothihuynhnhu2310@gmail.com")
+JIRA_API_TOKEN = os.environ.get("JIRA_API_TOKEN", "")
+JIRA_EMAIL = os.environ.get("JIRA_EMAIL", "")
 JIRA_PROJECT_KEY = os.environ.get("JIRA_PROJECT_KEY", "PCPOP")
-# User-facing browse URL (may differ from API base URL for Atlassian Cloud)
 JIRA_BROWSE_URL = os.environ.get("JIRA_BROWSE_URL", "https://vothihuynhnhu2310.atlassian.net").rstrip("/")
 
 _is_cloud = "atlassian.com" in JIRA_BASE_URL
+
 _headers = {
     "Authorization": f"{JIRA_AUTH_TYPE} {JIRA_API_TOKEN}",
     "Content-Type": "application/json",
     "Accept": "application/json",
 }
-# Host header only needed for on-prem Jira (IP-based virtual host routing)
 if not _is_cloud:
     _headers["Host"] = JIRA_HOST
 
@@ -58,13 +69,13 @@ import urllib3
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 
-def _fetch_project_schema() -> str:
-    """Call createmeta to discover required/optional fields per issue type."""
+def _fetch_project_schema_for_key(project_key: str) -> str:
+    """Call createmeta to discover required/optional fields per issue type for a given project."""
     try:
         resp = requests.get(
             f"{JIRA_BASE_URL}/rest/api/2/issue/createmeta",
             params={
-                "projectKeys": JIRA_PROJECT_KEY,
+                "projectKeys": project_key,
                 "expand": "projects.issuetypes.fields",
             },
             headers=_headers,
@@ -77,7 +88,7 @@ def _fetch_project_schema() -> str:
         return f"(Schema fetch failed: {exc})"
 
     if not projects:
-        return f"(No project found for key {JIRA_PROJECT_KEY!r})"
+        return f"(No project found for key {project_key!r})"
 
     lines = []
     for itype in projects[0].get("issuetypes", []):
@@ -106,11 +117,7 @@ def _fetch_project_schema() -> str:
     return "\n".join(lines)
 
 
-log.info("Starting Jira agent | model=%s base_url=%s project=%s", LLM_MODEL, LLM_BASE_URL, JIRA_PROJECT_KEY)
-
-# Fetched once at startup; project schema rarely changes between requests.
-_PROJECT_SCHEMA = _fetch_project_schema()
-log.info("Project schema loaded (%d chars)", len(_PROJECT_SCHEMA))
+log.info("Starting Jira agent | model=%s base_url=%s jira=%s", LLM_MODEL, LLM_BASE_URL, JIRA_BASE_URL)
 
 # SYSTEM_PROMPT = f"""You are a Jira project management assistant for project {JIRA_PROJECT_KEY}.
 # Instance: {JIRA_BASE_URL}
@@ -129,11 +136,55 @@ log.info("Project schema loaded (%d chars)", len(_PROJECT_SCHEMA))
 # Be concise and professional.
 # """
 
+_SAM1_SCHEMA = """\
+Issue type: Epic
+  Required:
+    - Summary (key=summary)
+    - Reporter (key=reporter)
+  Optional (common):
+    - Parent (key=parent)
+    - Description (key=description)
+
+Issue type: Subtask
+  Required:
+    - Summary (key=summary)
+    - Parent (key=parent)
+    - Reporter (key=reporter)
+  Optional (common):
+    - Description (key=description)
+
+Issue type: Task
+  Required:
+    - Summary (key=summary)
+    - Reporter (key=reporter)
+  Optional (common):
+    - Parent (key=parent)
+    - Description (key=description)
+
+Issue type: Story
+  Required:
+    - Summary (key=summary)
+    - Product Domain (key=customfield_10042) [options: Customer Experience, Payment, User]
+    - Reporter (key=reporter)
+    - Sub Domain (key=customfield_10043) [options: Help Center, Internal Tools, Config Tools]
+  Optional (common):
+    - Parent (key=parent)
+    - Description (key=description)
+
+Issue type: Bug
+  Required:
+    - Summary (key=summary)
+    - Reporter (key=reporter)
+  Optional (common):
+    - Parent (key=parent)
+    - Description (key=description)
+    - Product Domain (key=customfield_10042) [options: Customer Experience, Payment, User]
+"""
+
 SYSTEM_PROMPT = f"""
 ## Role
-You are a Jira project management assistant, expert at extracting structured
-information from unstructured messages and creating well-formed Jira tickets.
-You operate on project {JIRA_PROJECT_KEY} at {JIRA_BASE_URL}.
+You are a Jira project management assistant connected to {JIRA_BASE_URL}.
+You help users create and manage Jira tickets for project **{JIRA_PROJECT_KEY}**.
 
 ## Objective
 Help users go from a raw message or description → a confirmed, correctly
@@ -142,85 +193,49 @@ structured Jira ticket — with zero manual field-hunting and no silent guessing
 ## Skills
 - Extract ticket fields (summary, description, type, priority, assignee, labels,
   components, etc.) from free-form text
-- Map extracted values to valid field options from the live project schema
+- Map extracted values to valid field options from the schema below
 - Identify missing required fields and ask for them clearly
 - Confirm all data with the user before writing anything to Jira
 
+## Project Schema ({JIRA_PROJECT_KEY})
+Always use project_key = **{JIRA_PROJECT_KEY}**. Do NOT call any tool to list or check projects.
+Use the schema below as the source of truth for required/optional fields.
+
+```
+{_SAM1_SCHEMA}
+```
+
 ## Steps
 
-### Step 1 — Load Schema
-Call get_project_schema to fetch the live field definitions for project
-{JIRA_PROJECT_KEY}. Use the returned schema as the source of truth for:
-- Which fields are required vs optional
-- Valid options for every dropdown / select field (issue type, priority,
-  components, labels, assignee, custom fields, etc.)
-
-### Step 2 — Extract & Map
+### Step 1 — Extract & Map
 Parse the user's message and extract values for every field present.
 Map each extracted value to the closest valid option in the schema.
 Do NOT invent or guess values for fields that are unclear — flag them.
 
-### Step 2b — Gather Bug Details (Bug type only)
-If the issue type is Bug (or likely a Bug) AND any of the following are missing
-from the conversation, ask them ALL in ONE message before proceeding:
+### Step 2 — Gather Bug Details (Bug type only)
+If the issue type is Bug AND any of the following are missing, ask them ALL
+in ONE message before proceeding:
 - **Reproduce steps**: exact steps to reproduce the bug
 - **Browser / device**: browser name+version, OS, device type
-- **Frequency & environment**: how often does it happen (% or always/sometimes)?
-  Which environment (staging / production / both)?
-- **Error message or log**: any console error, stack trace, or log snippet
+- **Frequency & environment**: how often / which environment?
+- **Error message or log**: any console error or stack trace
 
-Only skip this step if all four points are already clearly answered in the
-conversation. Never ask them one-by-one across multiple messages — always batch
-into a single message. Do NOT proceed to Step 3 until these are answered.
+Never ask one-by-one — always batch into a single message.
+Do NOT proceed to Step 3 until these are answered.
 
 ### Step 3 — Resolve Missing Required Fields
-Compare extracted fields against the schema's required fields.
-For each required field that is missing or ambiguous (EXCEPT customfield_10042
-and customfield_10043 — handle those automatically in Step 3a), ask the user ONE
-consolidated follow-up (group all missing fields into a single message,
-never ask one field per message).
-
-### Step 3a — Auto-resolve Product Domain & Sub Domain
-customfield_10042 (Product Domain) and customfield_10043 (Sub Domain) are ALWAYS
-required. You MUST set them automatically — do NOT ask the user.
-
-Before creating the ticket:
-1. Call get_jira_custom_field_options("customfield_10042") and
-   get_jira_custom_field_options("customfield_10043") to get valid option IDs.
-2. Based on the ticket content and conversation context, pick the most appropriate
-   option for each field (use semantic reasoning — e.g. a finance internal tool maps
-   to Internal Tools; a customer-facing feature maps to Customer Experience).
-3. Include both fields in the create_jira_ticket call as custom_fields JSON:
-   '{{"customfield_10042": {{"id": "<chosen_id>"}}, "customfield_10043": {{"id": "<chosen_id>"}}}}'
-4. If truly ambiguous and you cannot determine a reasonable value even after
-   reading the options, ask the user with this exact format (do NOT expose raw
-   field IDs or Jira error text):
-
-   "Mình cần bạn xác nhận thêm 1-2 thông tin để tạo ticket:
-
-   **Product Domain** — lĩnh vực sản phẩm liên quan:
-   • [list each option name from get_jira_custom_field_options]
-
-   **Sub Domain** — mảng cụ thể hơn trong domain đó:
-   • [list each option name from get_jira_custom_field_options]
-
-   Bạn chọn phương án nào phù hợp nhất nhé?"
-
-   After the user answers, map their answer to the correct option ID and proceed.
+For each required field that is missing or ambiguous, ask the user ONE
+consolidated follow-up (group all missing fields in a single message).
 
 ### Step 4 — Confirm Before Creating
-Before calling create_jira_ticket, present a structured summary of all
-field values and ask the user to confirm or correct:
+Before calling create_jira_ticket, present a structured summary:
 
     📋 *Ticket Summary — please confirm:*
-    - Type          : Bug
-    - Summary       : Login fails on SSO with Chrome 124
-    - Priority      : High
-    - Assignee      : @nguyen.van.a
-    - Component     : Authentication
-    - Product Domain: Customer Experience
-    - Sub Domain    : Internal Tools
-    - Description   : <first 100 chars>...
+    - Project        : <KEY>
+    - Type           : Bug
+    - Summary        : Login fails on SSO
+    - Priority       : High
+    - Description    : <first 100 chars>...
     ➡ Reply *"confirm"* to create, or tell me what to change.
 
 Only call create_jira_ticket after the user explicitly confirms.
@@ -231,34 +246,18 @@ Return the ticket key and direct URL to the user.
 
 ## Handling Tool Errors
 When any tool raises an error, DO NOT forward the raw error text to the user.
-Instead, evaluate the error and decide the best action:
 
-1. **Error contains "Mình cần bạn xác nhận"** (Product Domain / Sub Domain missing):
-   Show the error text verbatim to the user — it already contains the question
-   in Vietnamese with available options. Wait for the user's answer, then map
-   their choice to the option id and retry create_jira_ticket.
-
-2. **Error mentions a required field the user can provide** (e.g. missing summary,
-   priority, component): Ask the user for that value in Vietnamese. Retry once
-   the user answers.
-
-3. **Error is a technical/system error the user cannot fix** (connection timeout,
-   auth failure, server 5xx): Tell the user briefly in Vietnamese that there was
-   a system error and suggest retrying, e.g.:
+1. **Required field missing**: Ask the user for that value. Retry once answered.
+2. **Technical/system error** (timeout, auth, 5xx): Tell the user briefly:
    "Có lỗi kỹ thuật khi tạo ticket, bạn thử lại sau nhé."
 
-NEVER show raw field IDs (customfield_XXXXX), HTTP status codes, or stack traces
-to the user.
+NEVER show raw field IDs (customfield_XXXXX), HTTP status codes, or stack traces.
 
 ## Constraints
 - NEVER call create_jira_ticket without explicit user confirmation in Step 4
-- NEVER ask the user about customfield_10042 or customfield_10043 — always infer them
-- NEVER guess or default other required fields silently — always ask
-- NEVER present options not returned by get_project_schema
+- NEVER guess or default required fields silently — always ask
 - Ask all missing fields in ONE message, not one-by-one
 - Keep all messages concise and professional — no filler text
-- get_project_schema must be called once at the start of each ticket
-  creation flow to ensure schema is current
 
 ## Output Format
 After successful creation, always reply with exactly:
@@ -267,11 +266,41 @@ After successful creation, always reply with exactly:
 
 ## Language Rule
 Detect the language of the user's message and reply in the same language
-throughout the entire conversation (English → English, Vietnamese → Vietnamese).
-STRICT: NEVER output Chinese characters (中文/漢字) under any circumstances,
-even partially. If you are about to write a Chinese word, replace it with the
-equivalent Vietnamese or English word instead.
+(English → English, Vietnamese → Vietnamese).
+STRICT: NEVER output Chinese characters under any circumstances.
 """
+
+
+@tool
+def list_jira_projects() -> list:
+    """List all Jira projects the user has access to. Call this when the user has not specified a project."""
+    try:
+        resp = requests.get(
+            f"{JIRA_BASE_URL}/rest/api/2/project",
+            headers=_headers,
+            timeout=15,
+            verify=False,
+        )
+        resp.raise_for_status()
+        return [
+            {"key": p["key"], "name": p["name"], "type": p.get("projectTypeKey", "")}
+            for p in resp.json()
+        ]
+    except Exception as exc:
+        log.warning("[jira] list_projects failed: %s", exc)
+        return []
+
+
+@tool
+def get_project_schema(project_key: str) -> str:
+    """
+    Fetch the live field definitions for a Jira project.
+    Call this at the start of each ticket creation flow with the chosen project_key.
+    Returns required and optional fields per issue type.
+    """
+    if not project_key:
+        return "Error: project_key is required. Ask the user which project to use."
+    return _fetch_project_schema_for_key(project_key)
 
 
 def _get_custom_field_options_raw(field_id: str) -> list:
@@ -316,6 +345,7 @@ def _get_custom_field_options_raw(field_id: str) -> list:
 def create_jira_ticket(
     summary: str,
     issue_type: str,
+    project_key: str = "",
     description: str = "",
     priority: str = "",
     custom_fields: str = "",
@@ -323,9 +353,14 @@ def create_jira_ticket(
     """
     Create a Jira ticket. Only call when all required fields are confirmed by the user.
 
+    project_key: the Jira project key (e.g. 'SCRUM'). Uses env default if not provided.
     custom_fields: JSON string of extra field key-value pairs,
     e.g. '{"customfield_10200": "value"}'.
     """
+    key = project_key or JIRA_PROJECT_KEY
+    if not key:
+        raise ValueError("project_key is required. Ask the user which project to use.")
+
     parsed_cf: dict = {}
     if custom_fields:
         try:
@@ -335,8 +370,15 @@ def create_jira_ticket(
         except (json.JSONDecodeError, AttributeError):
             pass
 
+    # Jira API v2 requires select/option fields as {"value": "..."} not plain strings.
+    # Convert string values for known select fields so the LLM doesn't need to know the format.
+    _SELECT_FIELDS = {"customfield_10042", "customfield_10043"}
+    for _sf in _SELECT_FIELDS:
+        if _sf in parsed_cf and isinstance(parsed_cf[_sf], str):
+            parsed_cf[_sf] = {"value": parsed_cf[_sf]}
+
     fields: dict = {
-        "project": {"key": JIRA_PROJECT_KEY},
+        "project": {"key": key},
         "summary": summary,
         "issuetype": {"name": issue_type},
     }
@@ -399,14 +441,15 @@ def create_jira_ticket(
             errors = retry.json().get("errors", {})
             msgs = retry.json().get("errorMessages", [])
 
-        # If Product Domain or Sub Domain is among the errors, ask user in Vietnamese
+        # If Product Domain or Sub Domain is among the errors, ask user in Vietnamese.
+        # Return as a string (not raise) so LangGraph passes it to the LLM as a tool result.
         DOMAIN_KEYS = {"customfield_10042", "customfield_10043", "Product Domain", "Sub Domain"}
         if set(errors.keys()) & DOMAIN_KEYS:
             opts_domain = _get_custom_field_options_raw("customfield_10042")
             opts_subdomain = _get_custom_field_options_raw("customfield_10043")
             domain_list = "\n".join(f"  • {o['value']} (id: {o['id']})" for o in opts_domain) if opts_domain else "  (không lấy được danh sách)"
             subdomain_list = "\n".join(f"  • {o['value']} (id: {o['id']})" for o in opts_subdomain) if opts_subdomain else "  (không lấy được danh sách)"
-            raise ValueError(
+            return (
                 "Mình cần bạn xác nhận thêm 2 thông tin để tạo ticket:\n\n"
                 f"Product Domain — lĩnh vực sản phẩm liên quan:\n{domain_list}\n\n"
                 f"Sub Domain — mảng cụ thể hơn trong domain đó:\n{subdomain_list}\n\n"
@@ -554,7 +597,233 @@ _g.add_edge("tools", "chatbot")
 _g.add_edge("chatbot", END)
 graph = _g.compile()
 
-app = GreenNodeAgentBaseApp()
+# ---------------------------------------------------------------------------
+# Microsoft Teams Bot Integration
+# ---------------------------------------------------------------------------
+
+_TEAMS_APP_ID = os.environ.get("MicrosoftAppId", "")
+_TEAMS_APP_PASSWORD = os.environ.get("MicrosoftAppPassword", "")
+_TEAMS_TENANT_ID = os.environ.get("MicrosoftAppTenantId", "")
+
+_teams_histories: Dict[str, List[dict]] = {}
+_MAX_HISTORY_TURNS = 20
+
+_bot_adapter = BotFrameworkAdapter(
+    BotFrameworkAdapterSettings(
+        _TEAMS_APP_ID,
+        _TEAMS_APP_PASSWORD,
+        channel_auth_tenant=_TEAMS_TENANT_ID or None,
+    )
+)
+
+
+def _build_teams_message(history: List[dict]) -> str:
+    if len(history) <= 1:
+        return history[-1]["content"]
+    prior = history[:-1]
+    lines = "\n".join(
+        f"{'User' if m['role'] == 'user' else 'Assistant'}: {m['content']}"
+        for m in prior
+    )
+    return f"[Previous conversation]\n{lines}\n[End of history]\n\nUser: {history[-1]['content']}"
+
+
+def _invoke_agent_sync(message: str) -> str:
+    try:
+        result = graph.invoke({"messages": [("user", message)]})
+        msgs = result.get("messages", [])
+        if not msgs:
+            return "Sorry, the agent returned no response."
+        return msgs[-1].content
+    except Exception as exc:
+        log.error("Teams agent error: %s", exc, exc_info=True)
+        return f"Sorry, something went wrong: {str(exc)}"
+
+
+async def _process_and_reply_async(
+    conv_ref,
+    message: str,
+    history: List[dict],
+    conv_id: str,
+) -> None:
+    """Run agent in background and send reply proactively so Teams gets 201 quickly."""
+    loop = asyncio.get_running_loop()
+    reply = await loop.run_in_executor(None, _invoke_agent_sync, message)
+
+    history.append({"role": "assistant", "content": reply})
+    max_entries = _MAX_HISTORY_TURNS * 2
+    if len(history) > max_entries:
+        _teams_histories[conv_id] = history[-max_entries:]
+
+    async def _send_reply(ctx: TurnContext):
+        await ctx.send_activity(reply)
+
+    try:
+        await _bot_adapter.continue_conversation(conv_ref, _send_reply, _TEAMS_APP_ID)
+    except Exception as exc:
+        log.error("Proactive reply failed (conv=%s): %s", conv_id, exc, exc_info=True)
+
+
+async def _on_adapter_error(context: TurnContext, error: Exception):
+    log.error("Bot adapter turn error: %s", error, exc_info=True)
+
+_bot_adapter.on_turn_error = _on_adapter_error
+
+
+class _TeamsBot(ActivityHandler):
+    async def on_message_activity(self, turn_context: TurnContext):
+        # Use official Bot Framework helper to strip @bot mention (handles all Teams formats)
+        text = TurnContext.remove_recipient_mention(turn_context.activity)
+        if not text:
+            text = (turn_context.activity.text or "").strip()
+        else:
+            text = text.strip()
+        if not text:
+            return
+
+        conv_id = turn_context.activity.conversation.id
+        channel = turn_context.activity.channel_id or "unknown"
+        log.info("Teams message received (channel=%s conv=%s): %s", channel, conv_id[:16], text[:100])
+
+        history = _teams_histories.setdefault(conv_id, [])
+        history.append({"role": "user", "content": text})
+
+        # Send typing indicator before yielding (outbound to Teams service URL)
+        await turn_context.send_activity(Activity(type=ActivityTypes.typing))
+
+        # Save conversation reference before on_turn returns
+        conv_ref = TurnContext.get_conversation_reference(turn_context.activity)
+        message = _build_teams_message(history)
+
+        # Background the LLM call — Teams requires 201 within ~5 s; don't block here
+        asyncio.create_task(
+            _process_and_reply_async(conv_ref, message, history, conv_id)
+        )
+
+
+_teams_bot = _TeamsBot()
+
+
+async def _teams_messages_endpoint(request: _StarletteRequest) -> _StarletteResponse:
+    if "application/json" not in request.headers.get("content-type", ""):
+        return _StarletteResponse(status_code=415)
+    try:
+        body = await request.json()
+        activity = Activity().deserialize(body)
+        auth_header = request.headers.get("Authorization", "")
+        log.info(
+            "Teams /api/messages: type=%s channel=%s serviceUrl=%s has_auth=%s",
+            activity.type,
+            activity.channel_id,
+            (activity.service_url or "")[:60],
+            bool(auth_header),
+        )
+        invoke_response = await _bot_adapter.process_activity(
+            activity, auth_header, _teams_bot.on_turn
+        )
+        if invoke_response:
+            return _StarletteJSONResponse(
+                content=invoke_response.body, status_code=invoke_response.status
+            )
+        return _StarletteResponse(status_code=201)
+    except PermissionError as exc:
+        log.error("Teams JWT auth rejected (401): %s", exc)
+        return _StarletteResponse(status_code=401)
+    except Exception as exc:
+        log.error("Teams messages endpoint error: %s", exc, exc_info=True)
+        return _StarletteResponse(status_code=500)
+
+
+# ---------------------------------------------------------------------------
+# ASGI middleware: intercepts /api/messages before Starlette router sees it.
+# More reliable than router.routes.append() which can miss in some Starlette
+# versions when routes are compiled at init time.
+
+_CHAT_HTML_PATH = os.path.join(os.path.dirname(__file__), "chat.html")
+
+
+async def _chat_ui_endpoint(_request: _StarletteRequest) -> _StarletteResponse:
+    try:
+        with open(_CHAT_HTML_PATH, "rb") as f:
+            content = f.read()
+        return _StarletteResponse(
+            content=content,
+            status_code=200,
+            headers={"content-type": "text/html; charset=utf-8"},
+        )
+    except FileNotFoundError:
+        return _StarletteResponse(content=b"chat.html not found", status_code=404)
+
+
+async def _chat_api_endpoint(request: _StarletteRequest) -> _StarletteResponse:
+    if "application/json" not in request.headers.get("content-type", ""):
+        return _StarletteJSONResponse(
+            content={"status": "error", "response": "Content-Type must be application/json"},
+            status_code=415,
+        )
+    try:
+        body = await request.json()
+    except Exception:
+        return _StarletteJSONResponse(
+            content={"status": "error", "response": "Invalid JSON"}, status_code=400
+        )
+    message = (body.get("message") or "").strip()
+    if not message:
+        return _StarletteJSONResponse(
+            content={"status": "error", "response": "Missing 'message'"}, status_code=400
+        )
+    loop = asyncio.get_running_loop()
+    reply = await loop.run_in_executor(None, _invoke_agent_sync, message)
+    return _StarletteJSONResponse(
+        content={"status": "success", "response": reply, "timestamp": datetime.now().isoformat()}
+    )
+
+
+class _TeamsASGIMiddleware:
+    def __init__(self, app) -> None:
+        self._app = app
+
+    async def __call__(self, scope, receive, send) -> None:
+        if scope["type"] != "http":
+            await self._app(scope, receive, send)
+            return
+
+        path = scope.get("path", "")
+        method = scope.get("method", "")
+        request = _StarletteRequest(scope, receive, send)
+
+        if path == "/api/messages" and method == "POST":
+            response = await _teams_messages_endpoint(request)
+        elif path in ("/", "/chat") and method == "GET":
+            response = await _chat_ui_endpoint(request)
+        elif path == "/api/chat" and method == "POST":
+            response = await _chat_api_endpoint(request)
+        else:
+            # Forward to inner app; preserve X-Accel-Buffering for streaming
+            async def _send_with_accel(message):
+                if message.get("type") == "http.response.start":
+                    headers = list(message.get("headers", []))
+                    headers.append((b"x-accel-buffering", b"no"))
+                    message = {**message, "headers": headers}
+                await send(message)
+            await self._app(scope, receive, _send_with_accel)
+            return
+
+        await response(scope, receive, send)
+
+
+_teams_middleware = (
+    [_StarletteMiddleware(_TeamsASGIMiddleware)]
+    if (_TEAMS_APP_ID and _TEAMS_APP_PASSWORD)
+    else None
+)
+
+app = GreenNodeAgentBaseApp(middleware=_teams_middleware)
+
+if _TEAMS_APP_ID and _TEAMS_APP_PASSWORD:
+    log.info("Teams bot /api/messages ready via ASGI middleware (app_id=%s...)", _TEAMS_APP_ID[:8])
+else:
+    log.warning("MicrosoftAppId/Password not set — Teams /api/messages disabled")
 
 
 @app.entrypoint

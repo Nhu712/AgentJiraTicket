@@ -9,21 +9,21 @@
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
     :root {
-      --bg: #0f1117;
-      --surface: #1a1d27;
-      --surface2: #22263a;
-      --border: #2e3350;
-      --text: #e2e8f0;
-      --text-muted: #7c85a2;
+      --bg: #f5f6fa;
+      --surface: #ffffff;
+      --surface2: #eef0f6;
+      --border: #dde1ee;
+      --text: #1a1d2e;
+      --text-muted: #8a90a8;
       --user-bg: #2563eb;
       --user-text: #ffffff;
-      --agent-bg: #22263a;
-      --agent-text: #e2e8f0;
-      --error-bg: #3b1515;
-      --error-text: #f87171;
-      --accent: #3b82f6;
-      --input-bg: #1a1d27;
-      --scrollbar: #2e3350;
+      --agent-bg: #f0f2fa;
+      --agent-text: #1a1d2e;
+      --error-bg: #fff0f0;
+      --error-text: #dc2626;
+      --accent: #2563eb;
+      --input-bg: #ffffff;
+      --scrollbar: #dde1ee;
     }
 
     html, body {
@@ -144,9 +144,9 @@
       letter-spacing: -0.5px;
     }
 
-    .msg-row.user  .avatar { background: #1d6bbf; color: #fff; }
+    .msg-row.user  .avatar { background: #2563eb; color: #fff; }
     .msg-row.agent .avatar { background: var(--surface2); color: var(--text-muted); border: 1px solid var(--border); }
-    .msg-row.other .avatar { background: #6d28d9; color: #fff; }
+    .msg-row.other .avatar { background: #7c3aed; color: #fff; }
 
     .bubble-wrap {
       display: flex;
@@ -164,8 +164,8 @@
       font-weight: 600;
       padding: 0 4px;
     }
-    .msg-row.user  .speaker-name { color: #60a5fa; }
-    .msg-row.other .speaker-name { color: #a78bfa; }
+    .msg-row.user  .speaker-name { color: #1d4ed8; }
+    .msg-row.other .speaker-name { color: #6d28d9; }
 
     .bubble {
       padding: 10px 14px;
@@ -176,8 +176,8 @@
     }
 
     .msg-row.user  .bubble {
-      background: #1e4d8c;
-      color: #e2e8f0;
+      background: #2563eb;
+      color: #ffffff;
       border-bottom-right-radius: 4px;
     }
 
@@ -189,16 +189,16 @@
     }
 
     .msg-row.other .bubble {
-      background: #2e1f5e;
-      color: #e2e8f0;
-      border: 1px solid #5b21b6;
+      background: #ede9fe;
+      color: #2e1065;
+      border: 1px solid #c4b5fd;
       border-bottom-left-radius: 4px;
     }
 
     .bubble.error {
       background: var(--error-bg);
       color: var(--error-text);
-      border-color: #5c2020;
+      border-color: #fecaca;
     }
 
     /* Markdown inside agent bubbles */
@@ -214,7 +214,7 @@
     .bubble ul, .bubble ol { padding-left: 18px; margin: 4px 0; }
     .bubble li { margin: 2px 0; }
     .bubble code {
-      background: #0f1117;
+      background: #e8eaf2;
       border: 1px solid var(--border);
       border-radius: 4px;
       padding: 1px 5px;
@@ -222,7 +222,7 @@
       font-size: 13px;
     }
     .bubble pre {
-      background: #0f1117;
+      background: #e8eaf2;
       border: 1px solid var(--border);
       border-radius: 8px;
       padding: 12px;
@@ -354,7 +354,7 @@
 
     #send-btn:hover   { background: #1d4ed8; }
     #send-btn:active  { transform: scale(0.94); }
-    #send-btn:disabled { background: var(--surface2); cursor: not-allowed; opacity: 0.5; }
+    #send-btn:disabled { background: #c8cdd8; cursor: not-allowed; opacity: 0.6; }
 
     .input-hint {
       font-size: 11px;
@@ -364,8 +364,65 @@
     }
 
     .mention {
-      color: var(--accent);
-      font-weight: 600;
+      color: #ffffff;
+      font-weight: 700;
+    }
+
+    /* ── Speaker variants: Dev & QC ───────────────────────────── */
+    .msg-row.dev .avatar { background: #059669; }
+    .msg-row.qc  .avatar { background: #0891b2; }
+    .msg-row.dev .speaker-name { color: #065f46; }
+    .msg-row.qc  .speaker-name { color: #0e7490; }
+    .msg-row.dev .bubble {
+      background: #ecfdf5;
+      color: #064e3b;
+      border-color: #a7f3d0;
+    }
+    .msg-row.qc .bubble {
+      background: #ecfeff;
+      color: #164e63;
+      border-color: #a5f3fc;
+    }
+
+    /* ── Case banner ───────────────────────────────────────────── */
+    .case-banner {
+      align-self: center;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 14px;
+      border-radius: 20px;
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      font-size: 12px;
+      animation: fadeIn 0.3s ease;
+      margin: 8px 0 4px;
+    }
+    .case-tag {
+      font-weight: 700;
+      font-size: 10px;
+      letter-spacing: 0.6px;
+      padding: 2px 8px;
+      border-radius: 10px;
+      text-transform: uppercase;
+    }
+    .case-tag.happy   { background: #dcfce7; color: #166534; }
+    .case-tag.edge    { background: #fef9c3; color: #854d0e; }
+    .case-tag.complex { background: #ede9fe; color: #4c1d95; }
+    .case-title-txt { color: var(--text); font-weight: 500; }
+    .case-progress-txt { color: var(--text-muted); margin-left: auto; font-size: 11px; }
+
+    /* ── Countdown chip ────────────────────────────────────────── */
+    .demo-countdown {
+      align-self: center;
+      padding: 5px 12px;
+      border-radius: 20px;
+      background: var(--surface2);
+      border: 1px dashed var(--border);
+      font-size: 12px;
+      color: var(--text-muted);
+      animation: fadeIn 0.3s ease;
+      margin: 4px 0;
     }
   </style>
 </head>
@@ -460,8 +517,10 @@
 
   // ── Parse speaker prefix from content ─────────────────────────
   const SPEAKERS = {
-    'Dev': { side: 'user',  avatar: 'Dev' },
-    'QC':  { side: 'other', avatar: 'QC'  },
+    'PO':          { side: 'user',  avatar: 'PO',  cls: '' },
+    'Stakeholder': { side: 'other', avatar: 'SH',  cls: '' },
+    'Dev':         { side: 'other', avatar: 'DEV', cls: 'dev' },
+    'QC':          { side: 'user',  avatar: 'QC',  cls: 'qc' },
   };
 
   function parseSpeaker(content) {
@@ -478,9 +537,10 @@
     const { speaker, body } = role === 'user' ? parseSpeaker(content) : { speaker: null, body: content };
     const info = speaker ? SPEAKERS[speaker] : null;
     const side = role === 'assistant' ? 'agent' : (info ? info.side : 'user');
+    const extraCls = info?.cls || '';
 
     const row = document.createElement('div');
-    row.className = `msg-row ${side}`;
+    row.className = `msg-row ${side}${extraCls ? ' ' + extraCls : ''}`;
 
     const avatar = document.createElement('div');
     avatar.className = 'avatar';
@@ -680,45 +740,178 @@
     }
   }, 60_000);
 
-  // ── Auto-resize textarea ───────────────────────────────────────
-  inputEl.addEventListener('input', () => {
-    inputEl.style.height = 'auto';
-    inputEl.style.height = Math.min(inputEl.scrollHeight, 140) + 'px';
-  });
-
   // ── Keyboard: Enter sends, Shift+Enter newline ─────────────────
   inputEl.addEventListener('keydown', e => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
+      stopDemo();
       sendMessage();
     }
   });
 
-  sendBtn.addEventListener('click', sendMessage);
-  clearBtn.addEventListener('click', clearChat);
+  inputEl.addEventListener('input', () => {
+    if (_demoRunning) stopDemo();
+    inputEl.style.height = 'auto';
+    inputEl.style.height = Math.min(inputEl.scrollHeight, 140) + 'px';
+  });
 
-  // ── Sample conversation ────────────────────────────────────────
-  const SAMPLE = [
-    `QC:\nBị bug: user không xóa được tài khoản của mình.`,
-    `Dev:\nỜ tính năng đó chưa làm mà.`,
-    `QC:\nVậy sao? Tưởng có rồi.`,
+  sendBtn.addEventListener('click', () => { stopDemo(); sendMessage(); });
+  clearBtn.addEventListener('click', () => { stopDemo(); clearChat(); });
+
+  // ── Demo data ──────────────────────────────────────────────────
+  const HAPPY_01 = [
+    `Stakeholder:\nChúng ta cần thêm tính năng xuất báo cáo doanh thu theo tháng ra file Excel. Người dùng finance hay yêu cầu cái này lắm.`,
+    `PO:\nOk, cụ thể họ cần các cột nào? Và filter theo khoảng thời gian hay theo từng tháng cố định?`,
+    `Stakeholder:\nCần có: ngày, mã đơn hàng, khách hàng, tổng tiền, trạng thái. Filter theo date range. Priority cao vì Q4 report sắp đến rồi.`,
+    `PO:\nRõ rồi. Sprint này có thể nhét vào không, estimate tầm 5 SP.`,
+  ];
+  const HAPPY_02 = [
+    `QC:\nAnh ơi, em test flow checkout thì bị lỗi. Bước chọn địa chỉ giao hàng xong ấn "Tiếp tục" thì màn hình trắng, không sang bước thanh toán được.`,
+    `Dev:\nXảy ra trên device nào vậy em? Browser gì?`,
+    `QC:\nEm test trên Chrome 124, Windows 11. Console có lỗi: TypeError: Cannot read properties of undefined (reading "paymentMethods"). Môi trường staging.`,
+    `Dev:\nOkay anh hiểu rồi, để anh fix. Bug này khá critical vì block toàn bộ checkout flow.`,
+  ];
+  const EDGE_04 = [
+    `PO:\nTạo ticket làm tính năng dark mode cho app nhé.`,
+    `Dev:\nOk.`,
+  ];
+  const COMPLEX_07 = [
+    `PO:\nDev estimate tính năng "lịch sử đơn hàng" là 13 SP — mình thấy hơi cao. Feature này tương tự "lịch sử giao dịch" bên fintech module estimate có 5 SP.`,
+    `Dev:\n2 feature trông giống nhưng khác nhau nhiều. Lịch sử giao dịch chỉ read từ 1 table, không có filter phức tạp. Lịch sử đơn hàng cần join 6 table, filter theo status/date/product, có phân trang, export CSV, và real-time status update qua websocket.`,
+    `PO:\nWebsocket là requirement bắt buộc không? Hay polling cũng được?`,
+    `Dev:\nStakeholder yêu cầu status update "tức thì" khi driver cập nhật. Nếu dùng polling 30 giây thì estimate xuống còn 9 SP.`,
+    `PO:\nSự khác biệt giữa websocket real-time và polling 30 giây với end user là gì trong context này?`,
+    `Dev:\nVới order tracking: user đặt hàng xong họ chờ confirmation, delay 30 giây là chấp nhận được. Với live delivery tracking thì cần real-time. Order history page thì polling là đủ.`,
+    `PO:\nVậy websocket không fit use case này. Bỏ websocket ra, 9 SP — breakdown tiếp được không? Vẫn muốn hiểu 9 SP gồm gì.`,
+    `Dev:\nOkay: backend API + join logic là 3 SP, filter và phân trang 2 SP, UI component 2 SP, export CSV 1 SP, QC write test case + fix bug sau QC 1 SP. Tổng 9 SP.`,
+    `PO:\nExport CSV — stakeholder có mention cái này không? Mình check lại requirement gốc không thấy.`,
+    `Dev:\nMình assume vì lịch sử giao dịch có. Nếu không cần thì bỏ, còn 8 SP.`,
+    `PO:\nBỏ CSV — sẽ làm trong ticket riêng nếu có request thật. Vậy 8 SP, mình accept. Nhưng lần sau assumption thì flag lên để mình confirm với stakeholder trước khi estimate nhé, tránh làm việc dư.`,
+    `Dev:\nRõ. Mình sẽ ghi rõ assumptions trong ticket description để dễ track.`,
   ];
 
-  function loadSample() {
-    SAMPLE.forEach(content => {
-      history.push({ role: 'user', content });
-      const node = renderMessage({ role: 'user', content, isError: false, time: new Date() });
-      messagesEl.appendChild(node);
+  const DEMO_CASES = [
+    { tag: 'HAPPY PATH', tagCls: 'happy',   title: 'Feature Request',       messages: HAPPY_01 },
+    { tag: 'HAPPY PATH', tagCls: 'happy',   title: 'Bug Report',             messages: HAPPY_02 },
+    { tag: 'EDGE CASE',  tagCls: 'edge',    title: 'Minimal Info',           messages: EDGE_04  },
+    { tag: 'COMPLEX',    tagCls: 'complex', title: 'Estimate Negotiation',   messages: COMPLEX_07 },
+  ];
+
+  // ── Demo runner ────────────────────────────────────────────────
+  let _demoRunning = false;
+  let _demoAborted = false;
+  let _demoCancelFn = null;
+  let _countdownEl  = null;
+
+  function _cancelableDelay(ms) {
+    return new Promise(resolve => {
+      const t = setTimeout(resolve, ms);
+      _demoCancelFn = () => { clearTimeout(t); resolve(); };
     });
-    saveHistory();
-    syncEmptyState();
+  }
+
+  function stopDemo() {
+    if (!_demoRunning) return;
+    _demoAborted = true;
+    _demoRunning = false;
+    if (_demoCancelFn) { _demoCancelFn(); _demoCancelFn = null; }
+    hideTyping();
+    _hideDemoCountdown();
+    const banner = document.getElementById('case-banner');
+    if (banner) banner.remove();
+  }
+
+  function _showCaseBanner(c, idx, total) {
+    const old = document.getElementById('case-banner');
+    if (old) old.remove();
+    const el = document.createElement('div');
+    el.id = 'case-banner';
+    el.className = 'case-banner';
+    el.innerHTML =
+      `<span class="case-tag ${c.tagCls}">${c.tag}</span>` +
+      `<span class="case-title-txt">${c.title}</span>` +
+      `<span class="case-progress-txt">${idx}/${total}</span>`;
+    messagesEl.appendChild(el);
     scrollDown();
+  }
+
+  function _showDemoCountdown(text) {
+    if (!_countdownEl) {
+      _countdownEl = document.createElement('div');
+      _countdownEl.className = 'demo-countdown';
+      messagesEl.appendChild(_countdownEl);
+    }
+    _countdownEl.textContent = text;
+    scrollDown();
+  }
+
+  function _hideDemoCountdown() {
+    if (_countdownEl) { _countdownEl.remove(); _countdownEl = null; }
+  }
+
+  function _clearDemoMessages() {
+    [...messagesEl.children].forEach(el => { if (el.id !== 'empty-state') el.remove(); });
+    _countdownEl = null;
+  }
+
+  function _renderDemoMsg(content) {
+    emptyState.style.display = 'none';
+    const node = renderMessage({ role: 'user', content, isError: false, time: new Date() });
+    messagesEl.appendChild(node);
+    scrollDown();
+  }
+
+  function _typingDelay(text) {
+    const words = text.replace(/^[A-Za-z]+:\n/, '').split(/\s+/).length;
+    return Math.min(1800, Math.max(600, words * 65));
+  }
+
+  function _readDelay(text) {
+    const words = text.replace(/^[A-Za-z]+:\n/, '').split(/\s+/).length;
+    return Math.min(3200, Math.max(800, words * 85));
+  }
+
+  async function _runDemoLoop() {
+    _demoRunning = true;
+    _demoAborted = false;
+
+    while (!_demoAborted) {
+      for (let i = 0; i < DEMO_CASES.length; i++) {
+        if (_demoAborted) return;
+        const c = DEMO_CASES[i];
+
+        _showCaseBanner(c, i + 1, DEMO_CASES.length);
+
+        for (const content of c.messages) {
+          if (_demoAborted) return;
+          showTyping();
+          await _cancelableDelay(_typingDelay(content));
+          if (_demoAborted) { hideTyping(); return; }
+          hideTyping();
+          _renderDemoMsg(content);
+          await _cancelableDelay(_readDelay(content));
+        }
+
+        if (_demoAborted) return;
+
+        const isLast = i === DEMO_CASES.length - 1;
+        for (let s = 10; s >= 1; s--) {
+          if (_demoAborted) return;
+          _showDemoCountdown(`⏱ ${isLast ? 'Restarting' : 'Next case'} in ${s}s`);
+          await _cancelableDelay(1000);
+        }
+        if (!_demoAborted) _clearDemoMessages();
+      }
+    }
   }
 
   // ── Init ───────────────────────────────────────────────────────
   restoreHistory();
-  if (history.length === 0) loadSample();
-  syncEmptyState();
+  if (history.length === 0) {
+    _runDemoLoop();
+  } else {
+    syncEmptyState();
+  }
   inputEl.focus();
 </script>
 </body>
