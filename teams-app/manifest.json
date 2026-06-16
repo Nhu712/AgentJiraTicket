@@ -1,0 +1,56 @@
+{
+  "$schema": "https://developer.microsoft.com/en-us/json-schemas/teams/v1.16/MicrosoftTeams.schema.json",
+  "manifestVersion": "1.16",
+  "version": "1.0.0",
+  "id": "de25bcde-d668-4696-9dcb-372a542eda6f",
+  "packageName": "com.vng.jira.agent",
+  "developer": {
+    "name": "VNG",
+    "websiteUrl": "https://vng.com.vn",
+    "privacyUrl": "https://vng.com.vn",
+    "termsOfUseUrl": "https://vng.com.vn"
+  },
+  "icons": {
+    "color": "color.png",
+    "outline": "outline.png"
+  },
+  "name": {
+    "short": "Jira Agent",
+    "full": "Jira Ticket Creator Bot"
+  },
+  "description": {
+    "short": "Tạo Jira ticket từ hội thoại",
+    "full": "Bot tự động summary đoạn hội thoại và tạo Jira ticket khi được @mention"
+  },
+  "accentColor": "#0078D4",
+  "bots": [
+    {
+      "botId": "de25bcde-d668-4696-9dcb-372a542eda6f",
+      "scopes": [
+        "personal",
+        "team",
+        "groupChat"
+      ],
+      "supportsFiles": false,
+      "isNotificationOnly": false,
+      "commandLists": [
+        {
+          "scopes": ["personal", "team", "groupChat"],
+          "commands": [
+            {
+              "title": "Tạo ticket",
+              "description": "Tóm tắt hội thoại và tạo Jira ticket"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "permissions": [
+    "identity",
+    "messageTeamMembers"
+  ],
+  "validDomains": [
+    "agentbase-runtime.aiplatform.vngcloud.vn"
+  ]
+}
